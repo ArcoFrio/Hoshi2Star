@@ -310,7 +310,7 @@ pub async fn get_segments(
     let items = sqlx::query_as::<_, Segment>(
         "SELECT id, source_file_id, json_key, source_text, target_text, \
                 segment_kind, scene_id, sequence_index, speaker, branch_path, \
-                context_json, status, qa_score, created_at, updated_at \
+                context_json, text_category, status, qa_score, created_at, updated_at \
          FROM segments WHERE source_file_id = ? \
          ORDER BY rowid LIMIT ? OFFSET ?",
     )
@@ -425,7 +425,7 @@ pub async fn update_segment(
     sqlx::query_as::<_, Segment>(
         "SELECT id, source_file_id, json_key, source_text, target_text, \
                 segment_kind, scene_id, sequence_index, speaker, branch_path, \
-                context_json, status, qa_score, created_at, updated_at \
+                context_json, text_category, status, qa_score, created_at, updated_at \
          FROM segments WHERE id = ?",
     )
     .bind(&id)

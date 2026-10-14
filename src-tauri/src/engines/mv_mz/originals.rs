@@ -133,6 +133,13 @@ impl SnapshotStore {
         self.manifest.files.get(rel)
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &SnapshotEntry)> {
+        self.manifest
+            .files
+            .iter()
+            .map(|(rel, entry)| (rel.as_str(), entry))
+    }
+
     /// `true` when `rel` is recorded *and* its file exists.
     pub fn contains(&self, rel: &str) -> bool {
         self.manifest.files.contains_key(rel)

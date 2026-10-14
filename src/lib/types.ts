@@ -69,6 +69,8 @@ export interface Segment {
   branchPath: string | null;
   /** Versioned engine-specific facts; never interpreted as another engine's schema. */
   contextJson: string | null;
+  /** Optional text category (`null` = core extraction). */
+  textCategory?: string | null;
   targetText: string;
   status: SegmentStatus;
   qaScore: number | null;
@@ -493,4 +495,75 @@ export interface PilotRunReport {
   baseline: PilotVariantSummary;
   contextual: PilotVariantSummary;
   changedCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Optional text coverage (MV/MZ plugin & system UI text)
+// ---------------------------------------------------------------------------
+
+export type CategoryState = "verified" | "linked" | "blocked";
+export type CategoryGroup =
+  | "system"
+  | "map"
+  | "plugin"
+  | "plugin_command"
+  | "note_tag";
+export type ReferenceSite =
+  | "note"
+  | "script"
+  | "plugin_command"
+  | "plugin_command_arg"
+  | "plugin_param"
+  | "plugin_source";
+
+export interface CoverageReference {
+  text: string;
+  site: ReferenceSite;
+  location: string;
+  excerpt: string;
+}
+
+export interface CoverageConstraint {
+  rule: string;
+}
+
+export interface CoverageCategory {
+  key: string;
+  title: string;
+  group: CategoryGroup;
+  state: CategoryState;
+  enabled: boolean;
+  decided: boolean;
+  defaultEnabled: boolean;
+  visibleIn: string;
+  consequences: string[];
+  constraints: CoverageConstraint[];
+  segmentCount: number;
+  translatedCount: number;
+  samples: string[];
+  references: CoverageReference[];
+  referenceCount: number;
+  blockedReason: string | null;
+}
+
+export interface CoverageCoreWarning {
+  segmentKind: string;
+  source: string;
+  references: CoverageReference[];
+}
+
+export interface CoverageView {
+  supported: boolean;
+  hasDecisions: boolean;
+  reconstructed: boolean;
+  driftedFiles: { file: string; pointers: number }[];
+  pluginsUnreadable: string | null;
+  categories: CoverageCategory[];
+  coreWarnings: CoverageCoreWarning[];
+}
+
+export interface CategoryChange {
+  categoryKey: string;
+  enabled: boolean;
+  acceptConsequences?: boolean;
 }

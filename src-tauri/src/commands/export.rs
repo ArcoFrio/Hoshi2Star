@@ -91,6 +91,27 @@ fn apply_font_prefix(text: &str, n: u32, replace_existing: bool, engine: &str) -
     }
 }
 
+/// Apply the export font prefix to `(key, target, is_core)` rows. Only core
+/// segments of prefix-eligible files are prefixed: optional text categories
+/// (e.g. map display names) are drawn without escape codes.
+fn with_font_prefix(
+    rows: Vec<(String, String, bool)>,
+    font_size: Option<u32>,
+    eligible_file: bool,
+    replace_existing: bool,
+    engine: &str,
+) -> Vec<(String, String)> {
+    rows.into_iter()
+        .map(|(key, text, is_core)| match font_size {
+            Some(n) if eligible_file && is_core => {
+                let prefixed = apply_font_prefix(&text, n, replace_existing, engine);
+                (key, prefixed)
+            }
+            _ => (key, text),
+        })
+        .collect()
+}
+
 /// Result returned by `scan_font_status`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -134,12 +155,13 @@ pub async fn scan_font_status(
             _ => return Err("source_file_id or project_id required".to_string()),
         };
 
-    // Fetch (file_type, target_text) so we can filter to Map-only for mv_mz.
+    // Fetch (file_type, target_text) of core segments so we can filter to
+    // Map-only for mv_mz (optional categories never carry the prefix).
     let rows: Vec<(String, String)> = match source_file_id.as_deref() {
         Some(fid) => sqlx::query_as(
             "SELECT sf.file_type, s.target_text FROM segments s \
              JOIN source_files sf ON s.source_file_id = sf.id \
-             WHERE s.source_file_id = ? AND s.target_text != ''",
+             WHERE s.source_file_id = ? AND s.target_text != '' AND s.text_category IS NULL",
         )
         .bind(fid)
         .fetch_all(&state.db)
@@ -148,7 +170,7 @@ pub async fn scan_font_status(
         None => sqlx::query_as(
             "SELECT sf.file_type, s.target_text FROM segments s \
              JOIN source_files sf ON s.source_file_id = sf.id \
-             WHERE sf.project_id = ? AND s.target_text != ''",
+             WHERE sf.project_id = ? AND s.target_text != '' AND s.text_category IS NULL",
         )
         .bind(&resolved_pid)
         .fetch_all(&state.db)
@@ -191,7 +213,8 @@ fn strip_font_prefix(text: &str) -> String {
     format!("{speaker_prefix}{s}")
 }
 
-/// Remove existing font-size prefixes from every segment in the project.
+/// Remove existing font-size prefixes from every core segment in the project
+/// (optional categories are never prefixed, so their text is left alone).
 ///
 /// Called when the user skips the font-size dialog, to undo any prefix that
 /// was written by a previous (now-fixed) export.  No-op if no prefix exists.
@@ -203,7 +226,7 @@ pub async fn strip_font_prefixes(
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT s.id, s.target_text FROM segments s \
          JOIN source_files sf ON s.source_file_id = sf.id \
-         WHERE sf.project_id = ? AND s.target_text != ''",
+         WHERE sf.project_id = ? AND s.target_text != '' AND s.text_category IS NULL",
     )
     .bind(&project_id)
     .fetch_all(&state.db)
@@ -296,8 +319,8 @@ pub async fn export_project(
         entries.extend(wolf_entries);
     } else {
         for file in &files {
-            let mut translations: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
-                "SELECT json_key, target_text FROM segments \
+            let rows: Vec<(String, String, bool)> = sqlx::query_as(
+                "SELECT json_key, target_text, text_category IS NULL FROM segments \
                  WHERE source_file_id = ? AND target_text != ''",
             )
             .bind(&file.id)
@@ -305,19 +328,16 @@ pub async fn export_project(
             .await
             .map_err(|e| e.to_string())?;
 
-            if translations.is_empty() {
+            if rows.is_empty() {
                 continue;
             }
 
-            // For mv_mz: apply prefix to Map files only.
+            // For mv_mz: apply prefix to core Map segments only (optional
+            // categories such as map display names are drawn without escape
+            // codes, so a prefix would show up literally).
             let should_prefix = engine != "mv_mz" || file.file_type == "map";
-            if let Some(n) = font_size {
-                if should_prefix {
-                    for (_, text) in &mut translations {
-                        *text = apply_font_prefix(text, n, replace_existing, &engine);
-                    }
-                }
-            }
+            let translations =
+                with_font_prefix(rows, font_size, should_prefix, replace_existing, &engine);
 
             let pairs: Vec<(&str, &str)> = translations
                 .iter()
@@ -547,9 +567,9 @@ pub async fn debug_inject_file(
         return Err(format!("{untranslated} segment(s) not yet translated"));
     }
 
-    // Fetch translations (key → target_text).
-    let mut segs: Vec<(String, String)> = sqlx::query_as(
-        "SELECT json_key, target_text FROM segments \
+    // Fetch translations (key → target_text, core?).
+    let rows: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT json_key, target_text, text_category IS NULL FROM segments \
          WHERE source_file_id = ? AND target_text != ''",
     )
     .bind(&source_file_id)
@@ -558,15 +578,9 @@ pub async fn debug_inject_file(
     .map_err(|e| e.to_string())?;
 
     // Apply font-size prefix in-memory (never written to DB).
-    // For mv_mz: Map files only.
+    // For mv_mz: core Map segments only.
     let should_prefix = engine != "mv_mz" || file.file_type == "map";
-    if let Some(n) = font_size {
-        if should_prefix {
-            for (_, text) in &mut segs {
-                *text = apply_font_prefix(text, n, replace_existing, &engine);
-            }
-        }
-    }
+    let segs = with_font_prefix(rows, font_size, should_prefix, replace_existing, &engine);
 
     // Dispatch by engine class.
     match classify_file_type(&file.file_type) {

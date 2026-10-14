@@ -11,6 +11,7 @@ pub mod state;
 pub mod utils;
 
 use commands::app::updater_supported;
+use commands::coverage::{scan_text_coverage, set_text_categories};
 use commands::export::{
     debug_inject_file, export_debug_json, export_project, export_qa_report, export_tm,
     scan_font_status, strip_font_prefixes,
@@ -102,6 +103,8 @@ pub fn run() {
             start_terminology_scan,
             cancel_terminology_scan,
             translate_terminology_entries,
+            scan_text_coverage,
+            set_text_categories,
         ]);
 
     #[cfg(debug_assertions)]

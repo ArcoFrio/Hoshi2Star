@@ -53,6 +53,8 @@ fn classify(segment: &EngineSegmentContext<'_>) -> Option<(&'static str, PartOfS
         "common_event_name" => Some(("event", noun)),
         "system_term" => Some(("system", noun)),
         "game_title" => Some(("title", proper_noun)),
+        "system_type" => Some(("system", noun)),
+        "map_display_name" => Some(("place", proper_noun)),
         _ => None,
     }
 }

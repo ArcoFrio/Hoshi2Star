@@ -8,6 +8,7 @@ import type {
   ProjectStats,
   SourceFile,
 } from "@/lib/types";
+import { applyPostOpenCoverage } from "@/stores/coverage";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 
@@ -125,6 +126,19 @@ export async function openProject(
         translated: stats.translatedCount,
       }),
     );
+  }
+
+  if (project.engine === "mv_mz") {
+    // Optional plugin/system text: best-effort, never blocks opening.
+    try {
+      const outcome = await applyPostOpenCoverage(project.id, wasRestored);
+      if (outcome.kind === "enabled") {
+        await refreshProjectData(project.id);
+        toast.success(t("coverage.autoEnabled", { count: outcome.segments }));
+      }
+    } catch (err) {
+      toast.warning(t("coverage.scanFailed", { error: String(err) }));
+    }
   }
 
   return { project, wasRestored };

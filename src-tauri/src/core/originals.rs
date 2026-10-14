@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use sqlx::SqlitePool;
 
 use crate::engines::filter::{classify_file_type, FileClass};
-use crate::engines::mv_mz::originals::{reconstruct_json, CoreSegment, SnapshotStore};
+use crate::engines::mv_mz::originals::{reconstruct_json, CoreSegment, Provenance, SnapshotStore};
 
 /// Snapshot directory of one project.
 pub fn snapshot_root(data_dir: &Path, project_id: &str) -> PathBuf {
@@ -128,10 +128,27 @@ pub async fn ensure_mv_mz_snapshot(
     Ok(store)
 }
 
+/// Snapshot a file Hoshi2Star has never written before (e.g. `js/plugins.js`
+/// the first time plugin text is scanned) verbatim, if not already recorded.
+/// Returns whether the store changed; the caller saves it.
+pub fn capture_verbatim(
+    store: &mut SnapshotStore,
+    rel: &str,
+    disk_path: &Path,
+) -> Result<bool, String> {
+    if store.contains(rel) {
+        return Ok(false);
+    }
+    let bytes = std::fs::read(disk_path).map_err(|error| format!("read {rel}: {error}"))?;
+    store
+        .put(rel, &bytes, Provenance::Pristine, Vec::new())
+        .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::mv_mz::originals::Provenance;
 
     async fn seeded(game: &Path, map_on_disk: &str) -> (SqlitePool, tempfile::NamedTempFile) {
         let db = tempfile::NamedTempFile::new().unwrap();

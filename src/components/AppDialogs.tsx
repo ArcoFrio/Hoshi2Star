@@ -13,6 +13,8 @@ import { SettingsModal } from "@/components/settings/SettingsModal";
 import { AboutModal } from "@/components/AboutModal";
 import { TranslateAllDialog } from "@/components/TranslateAllDialog";
 import { FontSizeDialog } from "@/components/FontSizeDialog";
+import { TextCoverageDialog } from "@/components/TextCoverageDialog";
+import { useProjectStore } from "@/stores/project";
 import type { useAppHandlers } from "@/hooks/useAppHandlers";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +29,7 @@ interface AppDialogsProps {
 
 export function AppDialogs({ handlers }: AppDialogsProps) {
   const { t } = useTranslation();
+  const activeProjectId = useProjectStore((s) => s.activeProjectId);
 
   const {
     showSettings,
@@ -130,6 +133,8 @@ export function AppDialogs({ handlers }: AppDialogsProps) {
           onSkip={handleExportFontSkip}
         />
       )}
+
+      <TextCoverageDialog projectId={activeProjectId} />
 
     </>
   );

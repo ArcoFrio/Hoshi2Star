@@ -528,5 +528,92 @@
     "reportTerminologyConflicts": "Conflits terminologiques verrouillés (terme local conservé)",
     "reportTm": "Entrées de TM ajoutées",
     "reportBackup": "Sauvegarde écrite avant l'import : {{path}}"
+  },
+  "coverage": {
+    "toolbar": "Couverture du texte",
+    "toolbarHint": "Texte des plugins et du système hors extraction standard",
+    "title": "Couverture du texte",
+    "description": "Texte visible par le joueur hors extraction standard (paramètres de plugins, listes System, noms de cartes…). Chaque option indique où le texte apparaît et ce que son activation modifie. Tout ce qui casserait le jeu ne peut pas être activé.",
+    "scanning": "Analyse des fichiers du jeu…",
+    "unsupported": "Ce moteur n'a pas de catégories de texte optionnelles.",
+    "nothingFound": "Aucun texte supplémentaire visible par le joueur n'a été trouvé.",
+    "state": {
+      "verified": "Traduction sûre",
+      "linked": "Modifications liées nécessaires",
+      "blocked": "Traduction impossible sans risque"
+    },
+    "stateHint": {
+      "verified": "Texte d'affichage qu'aucun plugin, script ou balise de note n'utilise comme identifiant.",
+      "linked": "Utilisé comme identifiant ailleurs ; Hoshi2Star réécrit chaque référence dans le même export et le vérifie.",
+      "blocked": "Utilisé comme identifiant à un endroit que Hoshi2Star ne peut pas mettre à jour. Le traduire casserait le jeu : il reste dans la langue d'origine."
+    },
+    "textCount": "{{count}} textes",
+    "translatedCount": "{{done}}/{{total}} traduits",
+    "visibleIn": "Visible dans :",
+    "showDetails": "Afficher les détails",
+    "hideDetails": "Masquer les détails",
+    "consequences": "Ce que l'activation modifie",
+    "constraints": "Règles de traduction",
+    "samples": "Exemples",
+    "references": "Utilisé comme identifiant à {{count}} endroit(s)",
+    "moreReferences": "…et {{count}} de plus",
+    "site": {
+      "note": "balise de note",
+      "script": "script",
+      "plugin_command": "commande de plugin",
+      "plugin_command_arg": "argument de commande de plugin",
+      "plugin_param": "paramètre de plugin",
+      "plugin_source": "code du plugin"
+    },
+    "constraint": {
+      "keep_format_specifiers": "Conserver chaque %1, %2…",
+      "no_escape_codes": "Texte brut uniquement : des codes comme \\C[n] ou \\FS[n] s'afficheraient tels quels"
+    },
+    "category": {
+      "system": {
+        "skill_types": {
+          "title": "Noms des types de compétence",
+          "visibleIn": "Onglets du menu Compétences et commande Compétence en combat"
+        },
+        "equip_types": {
+          "title": "Noms des emplacements d'équipement",
+          "visibleIn": "Libellés des emplacements de l'écran Équipement"
+        },
+        "elements": {
+          "title": "Noms des éléments",
+          "visibleIn": "Uniquement là où un plugin les affiche (ex. faiblesses du bestiaire) ; absent des menus par défaut"
+        },
+        "weapon_types": {
+          "title": "Noms des types d'arme",
+          "visibleIn": "Uniquement là où un plugin les affiche ; absent des menus par défaut"
+        },
+        "armor_types": {
+          "title": "Noms des types d'armure",
+          "visibleIn": "Uniquement là où un plugin les affiche ; absent des menus par défaut"
+        }
+      },
+      "map": {
+        "display_name": {
+          "title": "Noms affichés des cartes",
+          "visibleIn": "Bandeau du nom de carte affiché à l'entrée d'une carte"
+        }
+      }
+    },
+    "reconstructedNotice": "Le dossier du jeu contenait déjà un export Hoshi2Star. Les fichiers d'origine ont été reconstruits depuis la base du projet : les exports repartent toujours du jeu non traduit.",
+    "driftNotice": "Certains textes extraits ne correspondent plus aux fichiers du jeu ({{files}}). Le jeu a peut-être été mis à jour depuis la création du projet.",
+    "pluginsUnreadable": "js/plugins.js n'a pas pu être lu de façon sûre ({{error}}) ; les paramètres de plugins ne sont ni analysés ni proposés.",
+    "coreWarningsTitle": "Traductions existantes aussi utilisées comme identifiants ({{count}})",
+    "coreWarningsHint": "Ces textes font déjà partie de l'extraction standard. Ils sont aussi comparés ou recherchés quelque part : vérifiez que leur traduction ne casse pas ces endroits.",
+    "busyTranslating": "Attendez la fin de la traduction avant de modifier les catégories.",
+    "close": "Fermer",
+    "save": "Enregistrer",
+    "saved": "Couverture du texte mise à jour",
+    "saveError": "Impossible de mettre à jour la couverture du texte : {{error}}",
+    "linkedConfirmTitle": "Activer les modifications liées ?",
+    "linkedConfirmDesc": "Ces catégories modifient d'autres données du jeu dans le même export. Lisez les conséquences ci-dessous.",
+    "linkedConfirmCancel": "Annuler",
+    "linkedConfirmAccept": "J'ai compris, activer",
+    "autoEnabled": "{{count}} textes supplémentaires visibles par le joueur ajoutés (voir Couverture du texte)",
+    "scanFailed": "Impossible d'analyser le texte supplémentaire : {{error}}"
   }
 }

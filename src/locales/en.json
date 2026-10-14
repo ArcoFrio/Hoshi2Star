@@ -528,5 +528,92 @@
     "reportTerminologyConflicts": "Locked terminology conflicts (local term kept)",
     "reportTm": "TM entries added",
     "reportBackup": "Backup written before import: {{path}}"
+  },
+  "coverage": {
+    "toolbar": "Text coverage",
+    "toolbarHint": "Plugin & system text outside the standard extraction",
+    "title": "Text coverage",
+    "description": "Player-visible text outside the standard extraction (plugin settings, System lists, map names…). Each option says where the text appears and what enabling it changes. Anything that would break the game cannot be enabled.",
+    "scanning": "Scanning the game files…",
+    "unsupported": "This engine has no optional text categories.",
+    "nothingFound": "No additional player-visible text was found.",
+    "state": {
+      "verified": "Safe to translate",
+      "linked": "Needs linked edits",
+      "blocked": "Cannot be translated safely"
+    },
+    "stateHint": {
+      "verified": "Display-only text that no plugin, script or note tag uses as an identifier.",
+      "linked": "Used as an identifier elsewhere; Hoshi2Star rewrites every reference in the same export and verifies it.",
+      "blocked": "Used as an identifier somewhere Hoshi2Star cannot update. Translating it would break the game, so it stays in the original language."
+    },
+    "textCount": "{{count}} texts",
+    "translatedCount": "{{done}}/{{total}} translated",
+    "visibleIn": "Visible in:",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details",
+    "consequences": "What enabling this changes",
+    "constraints": "Translation rules",
+    "samples": "Examples",
+    "references": "Used as an identifier in {{count}} place(s)",
+    "moreReferences": "…and {{count}} more",
+    "site": {
+      "note": "note tag",
+      "script": "script",
+      "plugin_command": "plugin command",
+      "plugin_command_arg": "plugin command argument",
+      "plugin_param": "plugin setting",
+      "plugin_source": "plugin code"
+    },
+    "constraint": {
+      "keep_format_specifiers": "Keep every %1, %2… placeholder",
+      "no_escape_codes": "Plain text only: codes like \\C[n] or \\FS[n] would be shown literally"
+    },
+    "category": {
+      "system": {
+        "skill_types": {
+          "title": "Skill type names",
+          "visibleIn": "Skill menu tabs and the battle Skill command"
+        },
+        "equip_types": {
+          "title": "Equipment slot names",
+          "visibleIn": "Equip screen slot labels"
+        },
+        "elements": {
+          "title": "Element names",
+          "visibleIn": "Only where a plugin shows them (e.g. bestiary weaknesses); not in default menus"
+        },
+        "weapon_types": {
+          "title": "Weapon type names",
+          "visibleIn": "Only where a plugin shows them; not in default menus"
+        },
+        "armor_types": {
+          "title": "Armor type names",
+          "visibleIn": "Only where a plugin shows them; not in default menus"
+        }
+      },
+      "map": {
+        "display_name": {
+          "title": "Map display names",
+          "visibleIn": "The map name popup shown when entering a map"
+        }
+      }
+    },
+    "reconstructedNotice": "The game folder already contained a previous Hoshi2Star export. The original files were rebuilt from the project database, so exports still start from the untranslated game.",
+    "driftNotice": "Some extracted text no longer matches the game files ({{files}}). The game may have been updated since the project was created.",
+    "pluginsUnreadable": "js/plugins.js could not be read safely ({{error}}); plugin settings are neither scanned nor offered.",
+    "coreWarningsTitle": "Existing translations also used as identifiers ({{count}})",
+    "coreWarningsHint": "These texts are already part of the standard extraction. They are also compared or looked up somewhere; check that their translation does not break those places.",
+    "busyTranslating": "Wait for the translation to finish before changing categories.",
+    "close": "Close",
+    "save": "Save",
+    "saved": "Text coverage updated",
+    "saveError": "Could not update text coverage: {{error}}",
+    "linkedConfirmTitle": "Enable linked edits?",
+    "linkedConfirmDesc": "These categories change other game data in the same export. Review the consequences below.",
+    "linkedConfirmCancel": "Cancel",
+    "linkedConfirmAccept": "I understand, enable",
+    "autoEnabled": "{{count}} additional player-visible texts added (see Text coverage)",
+    "scanFailed": "Could not scan for additional text: {{error}}"
   }
 }
