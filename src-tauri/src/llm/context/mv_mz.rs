@@ -43,7 +43,7 @@ pub(super) async fn build(
             };
             SegmentContextBundle {
                 prompt: Some(SegmentPromptContext {
-                    segment_kind: row.center_kind,
+                    segment_kind: row.center_kind.clone(),
                     scene_id,
                     speaker,
                     branch_path,
@@ -51,6 +51,8 @@ pub(super) async fn build(
                     following: Vec::with_capacity(NEIGHBOR_RADIUS as usize),
                 }),
                 qa_neighbors: QaNeighborContext::default(),
+                segment_kind: Some(row.center_kind),
+                context_json: row.center_context_json,
             }
         });
 
@@ -102,6 +104,7 @@ async fn fetch_rows(
         "SELECT c.id AS center_id, c.segment_kind AS center_kind, \
                 c.scene_id AS center_scene_id, c.sequence_index AS center_sequence, \
                 c.speaker AS center_speaker, c.branch_path AS center_branch_path, \
+                c.context_json AS center_context_json, \
                 n.segment_kind AS neighbor_kind, n.sequence_index AS neighbor_sequence, \
                 n.speaker AS neighbor_speaker, n.source_text AS neighbor_text, \
                 n.target_text AS neighbor_target \
@@ -139,6 +142,7 @@ struct JoinedRow {
     center_sequence: Option<i64>,
     center_speaker: Option<String>,
     center_branch_path: Option<String>,
+    center_context_json: Option<String>,
     neighbor_kind: Option<String>,
     neighbor_sequence: Option<i64>,
     neighbor_speaker: Option<String>,

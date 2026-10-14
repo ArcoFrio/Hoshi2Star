@@ -162,6 +162,9 @@ pub struct QaSemanticContext<'a> {
     pub source_language: &'a str,
     pub target_language: &'a str,
     pub segment_kind: &'a str,
+    /// Persisted `segments.context_json`; selects `%n` template protection
+    /// through [`TokEngine::for_segment`].
+    pub context_json: Option<&'a str>,
     pub neighbor_sources: &'a [String],
     pub neighbor_targets: &'a [String],
 }
@@ -328,8 +331,22 @@ pub fn check(
     legacy_terms: &[(String, String)],
     engine: &str,
 ) -> QaResult {
+    check_segment(source, target, legacy_terms, engine, "unknown", None)
+}
+
+/// [`check`] for a persisted segment: `segment_kind`/`context_json` refine the
+/// placeholder syntax (`%n` format templates, see [`TokEngine::for_segment`]).
+pub fn check_segment(
+    source: &str,
+    target: &str,
+    legacy_terms: &[(String, String)],
+    engine: &str,
+    segment_kind: &str,
+    context_json: Option<&str>,
+) -> QaResult {
     let terminology_rules = legacy_rules(source, legacy_terms);
-    check_with_rules(source, target, &terminology_rules, engine)
+    let tok_engine = TokEngine::for_segment(engine, segment_kind, context_json);
+    check_with_rules(source, target, &terminology_rules, engine, tok_engine)
 }
 
 fn check_with_rules(
@@ -337,10 +354,10 @@ fn check_with_rules(
     target: &str,
     terminology_rules: &[QaTerminologyRule],
     engine: &str,
+    tok_engine: TokEngine,
 ) -> QaResult {
     let mut errors: Vec<QaError> = Vec::new();
 
-    let tok_engine = TokEngine::from_project_engine(engine);
     let line_config = if engine == "wolf" {
         LineWidthConfig::wolf_default()
     } else {
@@ -391,7 +408,8 @@ pub fn check_with_context(
     engine: &str,
     context: &QaSemanticContext<'_>,
 ) -> QaResult {
-    let mut result = check_with_rules(source, target, terminology_rules, engine);
+    let tok_engine = TokEngine::for_segment(engine, context.segment_kind, context.context_json);
+    let mut result = check_with_rules(source, target, terminology_rules, engine, tok_engine);
     let source_trimmed = source.trim();
     let target_trimmed = target.trim();
 
@@ -962,7 +980,13 @@ mod tests {
     #[test]
     fn required_entity_is_critical_and_accepts_variants() {
         let rule = rich_rule(Enforcement::Required, PartOfSpeech::ProperNoun);
-        let mismatch = check_with_rules("勇者", "Champion", std::slice::from_ref(&rule), "mv_mz");
+        let mismatch = check_with_rules(
+            "勇者",
+            "Champion",
+            std::slice::from_ref(&rule),
+            "mv_mz",
+            TokEngine::MvMz,
+        );
         assert!(matches!(
             mismatch.errors.as_slice(),
             [QaError::TerminologyMismatch {
@@ -971,19 +995,24 @@ mod tests {
             }]
         ));
         assert!(mismatch.has_critical_errors());
-        assert!(
-            check_with_rules("勇者", "The Hero arrives", &[rule], "mv_mz")
-                .errors
-                .is_empty()
-        );
+        assert!(check_with_rules(
+            "勇者",
+            "The Hero arrives",
+            &[rule],
+            "mv_mz",
+            TokEngine::MvMz
+        )
+        .errors
+        .is_empty());
     }
 
     #[test]
     fn contextual_and_inflected_terms_never_block() {
         let contextual = rich_rule(Enforcement::Contextual, PartOfSpeech::ProperNoun);
         let verb = rich_rule(Enforcement::Required, PartOfSpeech::Verb);
-        let contextual_result = check_with_rules("勇者", "Champion", &[contextual], "mv_mz");
-        let verb_result = check_with_rules("勇者", "Champion", &[verb], "mv_mz");
+        let contextual_result =
+            check_with_rules("勇者", "Champion", &[contextual], "mv_mz", TokEngine::MvMz);
+        let verb_result = check_with_rules("勇者", "Champion", &[verb], "mv_mz", TokEngine::MvMz);
         assert!(matches!(
             contextual_result.errors.as_slice(),
             [QaError::TerminologyMismatch {
@@ -1007,9 +1036,57 @@ mod tests {
             source_language: "ja",
             target_language: "fr",
             segment_kind: kind,
+            context_json: None,
             neighbor_sources: neighbors,
             neighbor_targets: &[],
         }
+    }
+
+    #[test]
+    fn format_specifiers_are_protected_only_where_the_engine_formats_them() {
+        // System terms: a dropped %1 breaks the battle message → critical.
+        let term = check_with_context(
+            "%1は%2のダメージを受けた！",
+            "%1 took damage!",
+            &[],
+            "mv_mz",
+            &semantic_context("system_term", &[]),
+        );
+        assert!(term.has_critical_errors());
+        assert!(term.errors.iter().any(
+            |e| matches!(e, QaError::MissingPlaceholder { placeholder } if placeholder == "%2")
+        ));
+
+        // Plugin templates opt in through context_json.
+        let template_context = QaSemanticContext {
+            context_json: Some(r#"{"placeholderSyntax":"format"}"#),
+            ..semantic_context("plugin_message", &[])
+        };
+        let template = check_with_context(
+            "%1をゲットです！",
+            "Got it!",
+            &[],
+            "mv_mz",
+            &template_context,
+        );
+        assert!(template.has_critical_errors());
+
+        // Dialogue: bare %1 is ordinary text, not a placeholder.
+        let dialogue = check_with_context(
+            "成功率は%1です",
+            "The success rate is high",
+            &[],
+            "mv_mz",
+            &semantic_context("dialogue", &[]),
+        );
+        assert!(!dialogue
+            .errors
+            .iter()
+            .any(|e| matches!(e, QaError::MissingPlaceholder { .. })));
+
+        // Persisted-segment entry point used by the editor applies the same rule.
+        let edited = check_segment("%1の攻撃！", "Attack!", &[], "mv_mz", "system_term", None);
+        assert!(edited.has_critical_errors());
     }
 
     #[test]
@@ -1093,6 +1170,7 @@ mod tests {
                 source_language: "ja",
                 target_language: "en",
                 segment_kind: "dialogue",
+                context_json: None,
                 neighbor_sources: &[],
                 neighbor_targets: &translated_neighbors,
             },

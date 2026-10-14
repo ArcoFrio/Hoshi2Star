@@ -481,7 +481,14 @@ fn build_variant(
     source_language: &str,
     target_language: &str,
 ) -> PilotVariantResult {
-    let qa = qa::check(&segment.source_text, &result.translated_text, &[], "mv_mz");
+    let qa = qa::check_segment(
+        &segment.source_text,
+        &result.translated_text,
+        &[],
+        "mv_mz",
+        &segment.segment_kind,
+        None,
+    );
     let mut quality_flags = Vec::new();
     if result.translated_text.trim().is_empty() {
         quality_flags.push(PilotQualityFlag::EmptyTranslation);

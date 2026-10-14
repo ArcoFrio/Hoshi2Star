@@ -67,6 +67,7 @@ async fn evaluate_project(
         source_language: String,
         target_language: String,
         segment_kind: String,
+        context_json: Option<String>,
         status: String,
     }
 
@@ -81,6 +82,7 @@ async fn evaluate_project(
             COALESCE(p.source_language, 'ja') AS source_language,
             COALESCE(p.target_language, 'en') AS target_language,
             s.segment_kind,
+            s.context_json,
             s.status
          FROM segments s
          JOIN source_files sf ON s.source_file_id = sf.id
@@ -131,6 +133,7 @@ async fn evaluate_project(
             source_language: &row.source_language,
             target_language: &row.target_language,
             segment_kind: &row.segment_kind,
+            context_json: row.context_json.as_deref(),
             neighbor_sources: &qa_neighbors.sources,
             neighbor_targets: &qa_neighbors.targets,
         };
