@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use sqlx::{QueryBuilder, Sqlite};
 
 use crate::{
-    core::{manifest, qa, tm},
+    core::{manifest, originals, qa, tm},
     domain::types::*,
     engines::{
         detector::{detect_engine, guess_wolf_version_from_structure, Engine},
@@ -191,6 +191,18 @@ pub async fn open_project(
         .map_err(|error| format!("extraction worker failed: {error}"))??;
 
     tx.commit().await.map_err(|e| e.to_string())?;
+
+    // Snapshot the pristine MV/MZ files now, while extraction guarantees disk ==
+    // source. A reused project id must not inherit an older snapshot. Failure is
+    // not fatal: export captures (and reconstructs) lazily.
+    if engine_str == "mv_mz" {
+        originals::remove_snapshot(&state.data_dir, &project_id);
+        if let Err(error) =
+            originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &project_id).await
+        {
+            log::warn!("snapshot capture failed for {path}: {error}; export will retry");
+        }
+    }
 
     // Write manifest (best-effort — never fail open_project if this errors)
     let manifest_data = manifest::ManifestData::new(
@@ -523,6 +535,7 @@ pub async fn delete_project(
         let manifest_path = std::path::Path::new(&path).join(".hoshi2star.json");
         let _ = std::fs::remove_file(manifest_path);
     }
+    originals::remove_snapshot(&state.data_dir, &project_id);
 
     Ok(())
 }

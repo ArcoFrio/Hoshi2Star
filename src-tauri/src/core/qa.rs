@@ -495,7 +495,9 @@ fn shares_word_sequence(left: &str, right: &str, minimum_words: usize) -> bool {
     })
 }
 
-fn contains_source_script(text: &str, source_language: &str) -> bool {
+/// `true` when `text` contains characters of `source_language`'s script
+/// (only meaningful for languages with a distinctive script).
+pub(crate) fn contains_source_script(text: &str, source_language: &str) -> bool {
     text.chars().any(|character| match source_language {
         "ja" => matches!(
             character,

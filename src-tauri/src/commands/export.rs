@@ -8,12 +8,12 @@ use serde::Serialize;
 use std::io::Write as _;
 
 use crate::{
-    core::{report, tm},
+    core::{originals, report, tm},
     domain::types::SourceFile,
     engines::{
         detector::guess_wolf_version_from_structure,
         filter::{classify_file_type, FileClass},
-        mv_mz::injector,
+        mv_mz::{injector, integrity, originals::SnapshotStore},
         vx_ace::injector as vx_injector,
         wolf::injector::{
             inject_all as wolf_inject_all, inject_all_to_memory as wolf_to_memory,
@@ -270,6 +270,15 @@ pub async fn export_project(
 
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
 
+    // MV/MZ exports always start from the pristine originals, never from the
+    // game folder (which may already hold a previous export).
+    let snapshot = if engine == "mv_mz" {
+        Some(originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &project_id).await?)
+    } else {
+        None
+    };
+    let mut integrity_issues = Vec::new();
+
     let has_wolf = files
         .iter()
         .any(|f| matches!(classify_file_type(&f.file_type), FileClass::Wolf));
@@ -314,6 +323,8 @@ pub async fn export_project(
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect();
+            // Relative path inside the zip mirrors the on-disk layout.
+            let rel = originals::game_relative_path(&game_path, &file.file_path, &file.file_name);
 
             // A project is single-engine, so the wolf branch above already
             // handled every wolf file; here it is VX Ace vs MV/MZ JSON.
@@ -325,25 +336,46 @@ pub async fn export_project(
                         .map_err(|e| format!("inject {}: {e}", file.file_name))?
                 }
                 _ => {
-                    let raw = std::fs::read_to_string(&file.file_path)
-                        .map_err(|e| format!("read {}: {e}", file.file_name))?;
-                    injector::inject_to_bytes(&raw, &pairs)
-                        .map_err(|e| format!("inject {}: {e}", file.file_name))?
+                    let raw = read_original_json(snapshot.as_ref(), &rel, file)?;
+                    let bytes = injector::inject_to_bytes(&raw, &pairs)
+                        .map_err(|e| format!("inject {}: {e}", file.file_name))?;
+                    let planned: HashMap<String, String> = translations.iter().cloned().collect();
+                    integrity_issues
+                        .extend(integrity::verify_json_edit(&rel, &raw, &bytes, &planned));
+                    bytes
                 }
             };
-
-            // Relative path inside the zip mirrors the on-disk layout.
-            let rel = PathBuf::from(&file.file_path)
-                .strip_prefix(game_dir)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|_| file.file_name.clone());
             entries.push((rel, bytes));
         }
+    }
+
+    if !integrity_issues.is_empty() {
+        return Err(format!(
+            "Export blocked: the integrity check found {} problem(s); no file was written.\n{}",
+            integrity_issues.len(),
+            integrity::summarize(&integrity_issues)
+        ));
     }
 
     let zip_path = game_dir.join("hoshi2star.zip");
     write_zip(&zip_path, entries)?;
     Ok(zip_path.to_string_lossy().into_owned())
+}
+
+/// Text of an original MV/MZ JSON file: the verified snapshot when one exists
+/// (always, for MV/MZ projects), the game folder otherwise.
+fn read_original_json(
+    snapshot: Option<&SnapshotStore>,
+    rel: &str,
+    file: &SourceFile,
+) -> Result<String, String> {
+    let bytes = match snapshot {
+        Some(store) => store.read(rel).map_err(|e| e.to_string())?,
+        None => {
+            std::fs::read(&file.file_path).map_err(|e| format!("read {}: {e}", file.file_name))?
+        }
+    };
+    String::from_utf8(bytes).map_err(|e| format!("read {}: {e}", file.file_name))
 }
 
 /// Collect Wolf zip entries in memory without writing to disk.
@@ -574,14 +606,23 @@ pub async fn debug_inject_file(
         FileClass::Json => {
             let pairs: Vec<(&str, &str)> =
                 segs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-            let raw = std::fs::read_to_string(&file.file_path)
-                .map_err(|e| format!("read {}: {e}", file.file_name))?;
-            let mut json: serde_json::Value =
-                serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", file.file_name))?;
-            injector::inject(&mut json, &pairs)
+            let rel = originals::game_relative_path(&game_path, &file.file_path, &file.file_name);
+            let snapshot = if engine == "mv_mz" {
+                Some(
+                    originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &file.project_id)
+                        .await?,
+                )
+            } else {
+                None
+            };
+            let raw = read_original_json(snapshot.as_ref(), &rel, &file)?;
+            let out = injector::inject_to_bytes(&raw, &pairs)
                 .map_err(|e| format!("inject {}: {e}", file.file_name))?;
-            let out = serde_json::to_string(&json)
-                .map_err(|e| format!("serialise {}: {e}", file.file_name))?;
+            let planned: HashMap<String, String> = segs.iter().cloned().collect();
+            let issues = integrity::verify_json_edit(&rel, &raw, &out, &planned);
+            if !issues.is_empty() {
+                return Err(integrity::summarize(&issues));
+            }
             std::fs::write(&file.file_path, out)
                 .map_err(|e| format!("write {}: {e}", file.file_name))?;
             Ok(file.file_path.clone())
