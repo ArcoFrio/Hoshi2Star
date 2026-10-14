@@ -2,9 +2,50 @@
 //! (snapshot) JSON by structure — not by segment kind, which projects
 //! created before kinds existed store as `unknown`.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
 use serde_json::Value;
 
 use crate::engines::filter;
+
+/// A 401/405 line text inside an event list.
+static RE_EVENT_LINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/list/\d+/parameters/0$").expect("RE_EVENT_LINE must compile"));
+static RE_DESCRIPTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/\d+/description$").expect("RE_DESCRIPTION must compile"));
+static RE_PROFILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^/\d+/profile$").expect("RE_PROFILE must compile"));
+
+/// Whether a segment is laid out by text fitting at export (so a line-width
+/// warning on its raw translation does not apply). Dialogue is recognised
+/// by kind, or by structure for projects whose segments predate kinds.
+pub fn is_fitted_segment(
+    file_name: &str,
+    json_key: &str,
+    segment_kind: &str,
+    dialogue: bool,
+    descriptions: bool,
+) -> bool {
+    let event_file = filter::is_map_file(file_name, ".json")
+        || file_name == "CommonEvents.json"
+        || file_name == "Troops.json";
+    if dialogue
+        && event_file
+        && (segment_kind == "dialogue"
+            || (segment_kind == "unknown" && RE_EVENT_LINE.is_match(json_key)))
+    {
+        return true;
+    }
+    descriptions
+        && match file_name {
+            "Items.json" | "Skills.json" | "Weapons.json" | "Armors.json" => {
+                RE_DESCRIPTION.is_match(json_key)
+            }
+            "Actors.json" => RE_PROFILE.is_match(json_key),
+            _ => false,
+        }
+}
 
 /// A Show Text message: the 101 command and its consecutive 401 lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +233,60 @@ mod tests {
             messages_in("Troops.json", &troops)[0].pointer(),
             "/1/pages/0/list/0"
         );
+    }
+
+    #[test]
+    fn recognises_fitted_segments() {
+        let line = "/events/1/pages/0/list/3/parameters/0";
+        assert!(is_fitted_segment(
+            "Map001.json",
+            line,
+            "dialogue",
+            true,
+            false
+        ));
+        assert!(is_fitted_segment(
+            "Map001.json",
+            line,
+            "unknown",
+            true,
+            false
+        ));
+        assert!(!is_fitted_segment(
+            "Map001.json",
+            line,
+            "choice",
+            true,
+            false
+        ));
+        assert!(!is_fitted_segment(
+            "Map001.json",
+            line,
+            "dialogue",
+            false,
+            true
+        ));
+        assert!(is_fitted_segment(
+            "Items.json",
+            "/4/description",
+            "unknown",
+            false,
+            true
+        ));
+        assert!(is_fitted_segment(
+            "Actors.json",
+            "/1/profile",
+            "unknown",
+            false,
+            true
+        ));
+        assert!(!is_fitted_segment(
+            "Actors.json",
+            "/1/name",
+            "unknown",
+            true,
+            true
+        ));
     }
 
     #[test]

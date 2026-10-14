@@ -74,9 +74,9 @@ fn real_game_font_widths() {
         serde_json::from_slice(&std::fs::read(game.join("data/System.json")).unwrap()).unwrap();
     let geometry = Geometry::from_system(&system);
     let font_file = geometry.font_file.clone().expect("mainFontFilename");
-    let metrics = Metrics::Font(
+    let metrics = Metrics::Font(std::sync::Arc::new(
         GameFont::from_bytes(&std::fs::read(game.join("fonts").join(font_file)).unwrap()).unwrap(),
-    );
+    ));
     let corpus: Vec<String> = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
     let rows: Vec<serde_json::Value> = corpus
         .iter()
@@ -150,7 +150,9 @@ async fn real_game_fit_dump() {
 
     let system = read("System.json");
     let geometry = Geometry::from_system(&system);
-    let metrics = Metrics::Font(GameFont::from_bytes(&std::fs::read(font_file).unwrap()).unwrap());
+    let metrics = Metrics::Font(std::sync::Arc::new(
+        GameFont::from_bytes(&std::fs::read(font_file).unwrap()).unwrap(),
+    ));
     let mut inserts = Inserts {
         currency: target_or(
             "System.json",

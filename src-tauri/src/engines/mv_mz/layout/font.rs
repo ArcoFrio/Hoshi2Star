@@ -7,6 +7,9 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use thiserror::Error;
 
@@ -20,6 +23,8 @@ pub enum FontError {
     Inflate(String),
     #[error("font could not be parsed: {0}")]
     Parse(String),
+    #[error("font file could not be read: {0}")]
+    Io(String),
 }
 
 /// Per-character advances of a font, in font units.
@@ -85,7 +90,7 @@ impl GameFont {
 /// (half-width = ½ em, full-width and East Asian ambiguous = 1 em).
 #[derive(Debug, Clone)]
 pub enum Metrics {
-    Font(GameFont),
+    Font(Arc<GameFont>),
     Estimated,
 }
 
@@ -150,6 +155,37 @@ fn is_ambiguous(ch: char) -> bool {
             | 0x2020..=0x2022 | 0x2025..=0x2027 | 0x2030 | 0x2032 | 0x2033 | 0x203B
             | 0x2190..=0x21FF | 0x2200..=0x22FF | 0x2460..=0x24FF | 0x2500..=0x257F
             | 0x25A0..=0x25FF | 0x2605 | 0x2606 | 0x2640 | 0x2642 | 0x2660..=0x266F)
+}
+
+/// `(path, size, modified, font)`.
+type CachedFont = (PathBuf, u64, Option<SystemTime>, Arc<GameFont>);
+
+/// The last game font read, keyed by path, size and modification time (one
+/// project is open at a time; previews would otherwise decode it on every
+/// request).
+#[derive(Debug, Default)]
+pub struct FontCache {
+    entry: Mutex<Option<CachedFont>>,
+}
+
+impl FontCache {
+    pub fn load(&self, path: &Path) -> Result<Arc<GameFont>, FontError> {
+        let meta = std::fs::metadata(path).map_err(|e| FontError::Io(e.to_string()))?;
+        let key = (path.to_path_buf(), meta.len(), meta.modified().ok());
+        let mut entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached_path, len, modified, font)) = entry.as_ref() {
+            if (cached_path, len, modified) == (&key.0, &key.1, &key.2) {
+                return Ok(Arc::clone(font));
+            }
+        }
+        let bytes = std::fs::read(path).map_err(|e| FontError::Io(e.to_string()))?;
+        let font = Arc::new(GameFont::from_bytes(&bytes)?);
+        *entry = Some((key.0, key.1, key.2, Arc::clone(&font)));
+        Ok(font)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +414,7 @@ mod tests {
 
     #[test]
     fn metrics_sum_per_character_and_report_missing_glyphs() {
-        let metrics = Metrics::Font(GameFont::from_bytes(&sample()).unwrap());
+        let metrics = Metrics::Font(Arc::new(GameFont::from_bytes(&sample()).unwrap()));
         assert_eq!(metrics.text_width("AW…", 26.0), 13.0 + 15.6 + 26.0);
         assert_eq!(metrics.missing_chars("AzA♥"), vec!['z', '♥']);
         // Missing glyphs are estimated like a proportional fallback font.

@@ -8,6 +8,7 @@ pub mod fit;
 pub mod font;
 pub mod geometry;
 pub mod message;
+pub mod plan;
 pub mod simulate;
 pub mod text;
 pub mod verify;

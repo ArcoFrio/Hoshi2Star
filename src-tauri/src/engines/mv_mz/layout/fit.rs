@@ -126,7 +126,8 @@ fn is_rtl(text: &str) -> bool {
         .any(|c| ('\u{0600}'..='\u{06FF}').contains(&c) || ('\u{0750}'..='\u{077F}').contains(&c))
 }
 
-fn message_box(ctx: &FitContext, face: bool) -> BoxSpec {
+/// The Show Text box of a message (portrait or not).
+pub(crate) fn message_box(ctx: &FitContext, face: bool) -> BoxSpec {
     let message = &ctx.geometry.message;
     let text_x = message.text_x(face);
     BoxSpec {
@@ -139,7 +140,8 @@ fn message_box(ctx: &FitContext, face: bool) -> BoxSpec {
     }
 }
 
-fn help_box(ctx: &FitContext) -> BoxSpec {
+/// The help box of descriptions and profiles.
+pub(crate) fn help_box(ctx: &FitContext) -> BoxSpec {
     let help = &ctx.geometry.help;
     BoxSpec {
         text_x: help.text_x,
