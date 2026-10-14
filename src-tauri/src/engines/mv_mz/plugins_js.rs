@@ -50,8 +50,10 @@ pub struct PluginEntry {
     /// 1-based rank among entries sharing `name` (normally 1).
     pub occurrence: u32,
     pub status: bool,
-    /// The parsed `parameters` object (spans relative to the array text).
+    /// The parsed `parameters` object.
     parameters: SpanNode,
+    /// Byte span of the whole entry object in the file text.
+    span: Range<usize>,
 }
 
 impl PluginEntry {
@@ -109,6 +111,7 @@ impl PluginsJs {
                 occurrence,
                 status,
                 parameters,
+                span: item.span(),
             });
         }
         Ok(Self {
@@ -120,6 +123,21 @@ impl PluginsJs {
 
     pub fn entries(&self) -> &[PluginEntry] {
         &self.entries
+    }
+
+    /// Raw source text of one entry object.
+    pub fn entry_text(&self, entry: &PluginEntry) -> &str {
+        &self.text[entry.span.clone()]
+    }
+
+    /// Text before the `$plugins` array (header comments, assignment).
+    pub fn prefix(&self) -> &str {
+        &self.text[..self.array_span.start]
+    }
+
+    /// Text after the `$plugins` array (`;`, trailing newline).
+    pub fn suffix(&self) -> &str {
+        &self.text[self.array_span.end..]
     }
 
     pub fn entry(&self, name: &str, occurrence: u32) -> Option<&PluginEntry> {

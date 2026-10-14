@@ -6,4 +6,5 @@ pub mod integrity;
 pub mod json_span;
 pub mod originals;
 pub mod plugins_js;
+pub mod profiles;
 pub mod terminology;

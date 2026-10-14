@@ -51,6 +51,7 @@ const EMPTY_COVERAGE: CoverageView = {
   pluginsUnreadable: null,
   categories: [],
   coreWarnings: [],
+  notCovered: [],
 };
 
 const CATEGORY = {

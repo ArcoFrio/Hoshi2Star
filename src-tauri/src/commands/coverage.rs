@@ -14,12 +14,14 @@ use sqlx::SqlitePool;
 
 use crate::core::{manifest, originals};
 use crate::engines::filter::{classify_file_type, FileClass};
+use crate::engines::mv_mz::coverage::plugins::PLUGINS_FILE_NAME;
 use crate::engines::mv_mz::coverage::{
     self, CategoryGroup, CategoryState, Constraint, CoreSource, CoreWarning, CoverageInput,
-    CoverageReport, Reference, TextCategory,
+    CoverageReport, NotCovered, Reference, TextCategory,
 };
 use crate::engines::mv_mz::originals::{Provenance, SnapshotStore};
 use crate::engines::mv_mz::plugins_js::PluginsJs;
+use crate::engines::mv_mz::profiles::ProfileSet;
 use crate::llm::context::{mv_mz_context_class, PromptContextClass};
 use crate::state::AppState;
 
@@ -69,6 +71,8 @@ pub struct CoverageView {
     pub plugins_unreadable: Option<String>,
     pub categories: Vec<CategoryView>,
     pub core_warnings: Vec<CoreWarning>,
+    /// Plugin text that no verified profile covers (report only).
+    pub not_covered: Vec<NotCovered>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,6 +122,7 @@ fn unsupported_view() -> CoverageView {
         plugins_unreadable: None,
         categories: Vec::new(),
         core_warnings: Vec::new(),
+        not_covered: Vec::new(),
     }
 }
 
@@ -177,14 +182,16 @@ pub async fn scan_project(
         // `js/` sits next to `data/` (MZ: <game>/js, MV: <game>/www/js).
         let js_dir = data_dir_on_disk.and_then(|dir| dir.parent().map(|p| p.join("js")));
         let mut plugins_text = None;
+        let mut plugins_rel = "js/plugins.js".to_string();
         if let Some(js_dir) = &js_dir {
-            let disk = js_dir.join("plugins.js");
+            let disk = js_dir.join(PLUGINS_FILE_NAME);
             if disk.is_file() {
                 let rel = originals::game_relative_path(
                     &game_path,
                     &disk.to_string_lossy(),
                     "js/plugins.js",
                 );
+                plugins_rel = rel.clone();
                 if originals::capture_verbatim(&mut store, &rel, &disk)? {
                     store.save().map_err(|error| error.to_string())?;
                 }
@@ -226,6 +233,8 @@ pub async fn scan_project(
             plugins_js: plugins_text.as_deref(),
             plugin_sources: &plugin_sources,
             core_sources: &core_sources,
+            plugins_rel: &plugins_rel,
+            profiles: ProfileSet::embedded(),
         });
         Ok((report, store))
     });
@@ -315,6 +324,7 @@ async fn build_view(
         plugins_unreadable: report.plugins_unreadable,
         categories,
         core_warnings: report.core_warnings,
+        not_covered: report.not_covered,
     })
 }
 
@@ -348,7 +358,7 @@ async fn apply_changes(
         }
     }
 
-    let file_ids: HashMap<String, String> = sqlx::query_as::<_, (String, String)>(
+    let mut file_ids: HashMap<String, String> = sqlx::query_as::<_, (String, String)>(
         "SELECT file_name, id FROM source_files WHERE project_id = ?",
     )
     .bind(project_id)
@@ -357,8 +367,51 @@ async fn apply_changes(
     .map_err(|error| error.to_string())?
     .into_iter()
     .collect();
+    let game_path: String = sqlx::query_scalar("SELECT game_path FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_one(db)
+        .await
+        .map_err(|error| error.to_string())?;
 
     let mut tx = db.begin().await.map_err(|error| error.to_string())?;
+    // js/plugins.js is not part of core extraction: register it on first use.
+    let needs_plugins_row = changes
+        .iter()
+        .filter(|change| change.enabled)
+        .any(|change| {
+            find_category(report, &change.category_key).is_ok_and(|category| {
+                category
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.file_name == PLUGINS_FILE_NAME)
+            })
+        });
+    if needs_plugins_row && !file_ids.contains_key(PLUGINS_FILE_NAME) {
+        let rel = report
+            .categories
+            .iter()
+            .flat_map(|category| &category.candidates)
+            .find(|candidate| candidate.file_name == PLUGINS_FILE_NAME)
+            .map(|candidate| candidate.file_rel.clone())
+            .unwrap_or_else(|| "js/plugins.js".to_string());
+        let mut absolute = PathBuf::from(&game_path);
+        for part in rel.split('/') {
+            absolute.push(part);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO source_files (id, project_id, file_name, file_path, file_type) \
+             VALUES (?, ?, ?, ?, 'plugins_js')",
+        )
+        .bind(&id)
+        .bind(project_id)
+        .bind(PLUGINS_FILE_NAME)
+        .bind(absolute.to_string_lossy().to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+        file_ids.insert(PLUGINS_FILE_NAME.to_string(), id);
+    }
     for change in changes {
         if change.enabled {
             let category = find_category(report, &change.category_key)?;

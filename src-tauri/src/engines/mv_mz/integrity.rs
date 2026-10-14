@@ -31,6 +31,9 @@ pub enum IntegrityIssue {
     UnplannedChange { file: String, pointer: String },
     /// A planned edit is absent from the output.
     PlannedValueMissing { file: String, pointer: String },
+    /// The original value no longer matches what was extracted (or a fill-in
+    /// target is no longer empty): the edit would overwrite unknown text.
+    OriginalChanged { file: String, pointer: String },
 }
 
 impl fmt::Display for IntegrityIssue {
@@ -47,6 +50,10 @@ impl fmt::Display for IntegrityIssue {
             Self::UnplannedChange { file, pointer } => {
                 write!(f, "{file} {pointer}: unplanned text change")
             }
+            Self::OriginalChanged { file, pointer } => write!(
+                f,
+                "{file} {pointer}: the original text no longer matches what was extracted"
+            ),
             Self::PlannedValueMissing { file, pointer } => {
                 write!(
                     f,
@@ -170,6 +177,135 @@ impl Walker<'_> {
     }
 }
 
+/// One planned `plugins.js` edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedPluginEdit {
+    pub plugin: String,
+    pub occurrence: u32,
+    pub path: Vec<String>,
+    pub value: String,
+    /// What the original must hold for the edit to be safe (the extracted
+    /// source, or `""` for a fill-in).
+    pub expected_original: String,
+}
+
+impl PlannedPluginEdit {
+    fn pointer(&self) -> String {
+        crate::engines::mv_mz::plugins_js::plugin_key(&self.plugin, self.occurrence, &self.path)
+    }
+}
+
+/// Verify an edited `plugins.js` against its original: text outside the
+/// `$plugins` array identical, same plugins in the same order with the same
+/// status, untouched entries byte-identical, and in edited entries every
+/// parameter equal to the original except the planned leaves.
+pub fn verify_plugins_edit(
+    file: &str,
+    original: &str,
+    output: &str,
+    planned: &[PlannedPluginEdit],
+) -> Vec<IntegrityIssue> {
+    use crate::engines::mv_mz::plugins_js::PluginsJs;
+
+    let structure = |pointer: &str, reason: &str| IntegrityIssue::StructureChanged {
+        file: file.to_string(),
+        pointer: pointer.to_string(),
+        reason: reason.to_string(),
+    };
+    let before = match PluginsJs::parse(original) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return vec![IntegrityIssue::Unparseable {
+                file: file.to_string(),
+                reason: format!("original: {error}"),
+            }]
+        }
+    };
+    let after = match PluginsJs::parse(output) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return vec![IntegrityIssue::Unparseable {
+                file: file.to_string(),
+                reason: error.to_string(),
+            }]
+        }
+    };
+
+    let mut issues = Vec::new();
+    if before.prefix() != after.prefix() || before.suffix() != after.suffix() {
+        issues.push(structure(
+            "$plugins",
+            "text outside the plugin list changed",
+        ));
+    }
+    if before.entries().len() != after.entries().len() {
+        issues.push(structure("$plugins", "plugin count changed"));
+        return issues;
+    }
+    for (old, new) in before.entries().iter().zip(after.entries()) {
+        let pointer = format!("plugin #{} {}", old.index, old.name);
+        if old.name != new.name || old.status != new.status || old.occurrence != new.occurrence {
+            issues.push(structure(&pointer, "plugin name, order or status changed"));
+            continue;
+        }
+        let edits: Vec<&PlannedPluginEdit> = planned
+            .iter()
+            .filter(|edit| edit.plugin == old.name && edit.occurrence == old.occurrence)
+            .collect();
+        if edits.is_empty() {
+            if before.entry_text(old) != after.entry_text(new) {
+                issues.push(IntegrityIssue::UnplannedChange {
+                    file: file.to_string(),
+                    pointer,
+                });
+            }
+            continue;
+        }
+        let old_leaves = old.parameter_leaves();
+        let new_leaves = new.parameter_leaves();
+        if old_leaves.len() != new_leaves.len() {
+            issues.push(structure(&pointer, "parameter structure changed"));
+            continue;
+        }
+        for ((old_path, old_value), (new_path, new_value)) in old_leaves.iter().zip(&new_leaves) {
+            if old_path != new_path {
+                issues.push(structure(&pointer, "parameter structure changed"));
+                break;
+            }
+            match edits.iter().find(|edit| edit.path == *old_path) {
+                Some(edit) => {
+                    if *old_value != edit.expected_original {
+                        issues.push(IntegrityIssue::OriginalChanged {
+                            file: file.to_string(),
+                            pointer: edit.pointer(),
+                        });
+                    }
+                    if *new_value != edit.value {
+                        issues.push(IntegrityIssue::PlannedValueMissing {
+                            file: file.to_string(),
+                            pointer: edit.pointer(),
+                        });
+                    }
+                }
+                None if old_value != new_value => issues.push(IntegrityIssue::UnplannedChange {
+                    file: file.to_string(),
+                    pointer: format!("{pointer} {}", old_path.join(".")),
+                }),
+                None => {}
+            }
+        }
+        for edit in &edits {
+            if !old_leaves.iter().any(|(path, _)| *path == edit.path) {
+                issues.push(IntegrityIssue::PlannedValueMissing {
+                    file: file.to_string(),
+                    pointer: edit.pointer(),
+                });
+            }
+        }
+    }
+    issues
+}
+
 /// Render a bounded, human-readable summary for an export error.
 pub fn summarize(issues: &[IntegrityIssue]) -> String {
     const SHOWN: usize = 10;
@@ -250,6 +386,78 @@ mod tests {
             &plan(&[("/a~1b/c~0d", "New")]),
         );
         assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    const PLUGINS: &str = "// header\nvar $plugins =\n[\n{\"name\":\"A\",\"status\":true,\"description\":\"\",\"parameters\":{\"Cmd\":\"図鑑\",\"Key\":\"HP消費\",\"Row\":\"\"}},\n{\"name\":\"B\",\"status\":false,\"description\":\"\",\"parameters\":{\"x\":\"未\"}}\n];\n";
+
+    fn edit(path: &str, value: &str, expected: &str) -> PlannedPluginEdit {
+        PlannedPluginEdit {
+            plugin: "A".into(),
+            occurrence: 1,
+            path: vec![path.into()],
+            value: value.into(),
+            expected_original: expected.into(),
+        }
+    }
+
+    fn apply(edits: &[(&str, &str)]) -> String {
+        let plugins = crate::engines::mv_mz::plugins_js::PluginsJs::parse(PLUGINS).unwrap();
+        plugins
+            .apply_edits(
+                &edits
+                    .iter()
+                    .map(|(p, v)| ("A".to_string(), 1, vec![p.to_string()], v.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn planned_plugin_edits_pass_including_fill_ins() {
+        let output = apply(&[("Cmd", "Bestiary"), ("Row", "Kills")]);
+        let issues = verify_plugins_edit(
+            "js/plugins.js",
+            PLUGINS,
+            &output,
+            &[edit("Cmd", "Bestiary", "図鑑"), edit("Row", "Kills", "")],
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn unplanned_plugin_changes_and_drift_are_caught() {
+        // A parameter nobody planned changed (e.g. a note-tag key).
+        let output = apply(&[("Cmd", "Bestiary"), ("Key", "HP cost")]);
+        let issues = verify_plugins_edit(
+            "js/plugins.js",
+            PLUGINS,
+            &output,
+            &[edit("Cmd", "Bestiary", "図鑑")],
+        );
+        assert!(issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::UnplannedChange { pointer, .. } if pointer.ends_with("Key"))));
+
+        // The original no longer holds the extracted source.
+        let output = apply(&[("Cmd", "Bestiary")]);
+        let issues = verify_plugins_edit(
+            "js/plugins.js",
+            PLUGINS,
+            &output,
+            &[edit("Cmd", "Bestiary", "別の文字")],
+        );
+        assert!(issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::OriginalChanged { .. })));
+
+        // An untouched plugin entry and the header must stay byte-identical.
+        let tampered = PLUGINS.replace("\"status\":false", "\"status\":false ");
+        let issues = verify_plugins_edit("js/plugins.js", PLUGINS, &tampered, &[]);
+        assert!(issues
+            .iter()
+            .any(|i| matches!(i, IntegrityIssue::UnplannedChange { pointer, .. } if pointer.contains('B'))));
+        let header = PLUGINS.replace("// header", "// changed");
+        assert!(!verify_plugins_edit("js/plugins.js", PLUGINS, &header, &[]).is_empty());
     }
 
     #[test]

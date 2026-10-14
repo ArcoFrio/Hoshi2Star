@@ -26,8 +26,10 @@ use crate::core::terminology::{
     types::{Enforcement, PartOfSpeech},
 };
 use crate::llm::tokenizer::{Engine as TokEngine, Tokenizer};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -127,6 +129,11 @@ pub enum QaError {
         source_term: String,
         expected_targets: Vec<String>,
         severity: QaSeverity,
+    },
+    /// The translation breaks a rule of the code that displays it (from the
+    /// segment's `context_json.constraints`, e.g. plugin value conversion).
+    ConstraintViolation {
+        rule: String,
     },
 }
 
@@ -346,7 +353,11 @@ pub fn check_segment(
 ) -> QaResult {
     let terminology_rules = legacy_rules(source, legacy_terms);
     let tok_engine = TokEngine::for_segment(engine, segment_kind, context_json);
-    check_with_rules(source, target, &terminology_rules, engine, tok_engine)
+    let mut result = check_with_rules(source, target, &terminology_rules, engine, tok_engine);
+    for error in check_constraints(source, target, context_json) {
+        result.add_error(error);
+    }
+    result
 }
 
 fn check_with_rules(
@@ -410,6 +421,9 @@ pub fn check_with_context(
 ) -> QaResult {
     let tok_engine = TokEngine::for_segment(engine, context.segment_kind, context.context_json);
     let mut result = check_with_rules(source, target, terminology_rules, engine, tok_engine);
+    result
+        .errors
+        .extend(check_constraints(source, target, context.context_json));
     let source_trimmed = source.trim();
     let target_trimmed = target.trim();
 
@@ -495,6 +509,60 @@ fn shares_word_sequence(left: &str, right: &str, minimum_words: usize) -> bool {
     })
 }
 
+/// Constraint names written by MV/MZ text categories in `context_json`.
+const CONSTRAINT_PLAIN_TEXT: &str = "plain_text_value";
+const CONSTRAINT_NO_ESCAPES: &str = "no_escape_codes";
+
+/// Rules whose violation breaks the game (not merely its looks).
+fn is_critical_constraint(rule: &str) -> bool {
+    rule == CONSTRAINT_PLAIN_TEXT
+}
+
+static RE_ESCAPE_CODE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\(?:[A-Za-z]+\[[^\]]*\]|[{}<>|.!^$])").expect("RE_ESCAPE_CODE must compile")
+});
+static RE_JS_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|Infinity)$")
+        .expect("RE_JS_NUMBER must compile")
+});
+
+/// Checks driven by `context_json.constraints` (unknown rules are ignored).
+fn check_constraints(source: &str, target: &str, context_json: Option<&str>) -> Vec<QaError> {
+    let rules: Vec<String> = context_json
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get("constraints").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|rule| rule.as_str().map(str::to_string))
+        .collect();
+    let mut errors = Vec::new();
+    for rule in rules {
+        let violated = match rule.as_str() {
+            CONSTRAINT_PLAIN_TEXT => is_converted_by_plugins(target),
+            CONSTRAINT_NO_ESCAPES => {
+                RE_ESCAPE_CODE.is_match(target) && !RE_ESCAPE_CODE.is_match(source)
+            }
+            _ => false,
+        };
+        if violated {
+            errors.push(QaError::ConstraintViolation { rule });
+        }
+    }
+    errors
+}
+
+/// Mirrors PluginCommonBase `convertVariables`/`_paramReplacer`: these values
+/// stop being strings before the plugin sees them.
+fn is_converted_by_plugins(target: &str) -> bool {
+    let trimmed = target.trim();
+    target == "true"
+        || target == "false"
+        || RE_JS_NUMBER.is_match(trimmed)
+        || ((trimmed.starts_with('[') || trimmed.starts_with('{'))
+            && serde_json::from_str::<serde_json::Value>(trimmed).is_ok())
+}
+
 /// `true` when `text` contains characters of `source_language`'s script
 /// (only meaningful for languages with a distinctive script).
 pub(crate) fn contains_source_script(text: &str, source_language: &str) -> bool {
@@ -547,6 +615,13 @@ impl QaError {
                 QaSeverity::Warning => 15,
                 QaSeverity::Info => 0,
             },
+            QaError::ConstraintViolation { rule } => {
+                if is_critical_constraint(rule) {
+                    40
+                } else {
+                    10
+                }
+            }
         }
     }
 
@@ -563,11 +638,15 @@ impl QaError {
             QaError::LineTooLong { .. } => "line_too_long",
             QaError::BomDetected => "bom_detected",
             QaError::TerminologyMismatch { .. } => "terminology_mismatch",
+            QaError::ConstraintViolation { .. } => "constraint_violation",
         }
     }
 
     /// Critical errors must not be silently exported as completed work.
     pub fn is_critical(&self) -> bool {
+        if let QaError::ConstraintViolation { rule } = self {
+            return is_critical_constraint(rule);
+        }
         matches!(
             self,
             QaError::EmptyTranslation
@@ -631,6 +710,15 @@ impl QaError {
                 )
             }
             QaError::BomDetected => "UTF-8 BOM detected at start".to_string(),
+            QaError::ConstraintViolation { rule } => match rule.as_str() {
+                CONSTRAINT_PLAIN_TEXT => "This plugin converts values: the translation must not \
+                     be only a number, true/false or JSON"
+                    .to_string(),
+                CONSTRAINT_NO_ESCAPES => {
+                    "Drawn as plain text here: escape codes would be shown literally".to_string()
+                }
+                other => format!("Breaks display rule: {other}"),
+            },
             QaError::TerminologyMismatch {
                 source_term,
                 expected_targets,
@@ -678,6 +766,15 @@ impl QaError {
                 )
             }
             QaError::BomDetected => "BOM UTF-8 détecté en début de cible".to_string(),
+            QaError::ConstraintViolation { rule } => match rule.as_str() {
+                CONSTRAINT_PLAIN_TEXT => "Ce plugin convertit les valeurs : la traduction ne doit \
+                     pas être seulement un nombre, true/false ou du JSON"
+                    .to_string(),
+                CONSTRAINT_NO_ESCAPES => "Affiché en texte brut ici : les codes d'échappement \
+                     apparaîtraient tels quels"
+                    .to_string(),
+                other => format!("Enfreint une règle d'affichage : {other}"),
+            },
             QaError::TerminologyMismatch {
                 source_term,
                 expected_targets,
@@ -1089,6 +1186,81 @@ mod tests {
         // Persisted-segment entry point used by the editor applies the same rule.
         let edited = check_segment("%1の攻撃！", "Attack!", &[], "mv_mz", "system_term", None);
         assert!(edited.has_critical_errors());
+    }
+
+    #[test]
+    fn plugin_constraints_flag_coerced_values_and_new_escape_codes() {
+        let plain = Some(r#"{"constraints":["plain_text_value"]}"#);
+        for coerced in [
+            "true",
+            "false",
+            "42",
+            " 3.5 ",
+            "-1e3",
+            "Infinity",
+            "[1,2]",
+            "{\"a\":1}",
+        ] {
+            let result = check_segment(
+                "敵が逃げた！",
+                coerced,
+                &[],
+                "mv_mz",
+                "plugin_message",
+                plain,
+            );
+            assert!(
+                result
+                    .errors
+                    .iter()
+                    .any(|e| matches!(e, QaError::ConstraintViolation { rule } if rule == "plain_text_value")),
+                "{coerced:?} must be rejected"
+            );
+            assert!(result.has_critical_errors(), "{coerced:?}");
+        }
+        for fine in [
+            "The enemy fled!",
+            "True story",
+            "[Battle] begins",
+            "0x10",
+            "1,000 gold",
+        ] {
+            let result = check_segment("敵が逃げた！", fine, &[], "mv_mz", "plugin_message", plain);
+            assert!(
+                !result
+                    .errors
+                    .iter()
+                    .any(|e| matches!(e, QaError::ConstraintViolation { .. })),
+                "{fine:?} must pass"
+            );
+        }
+
+        let no_escapes = Some(r#"{"constraints":["no_escape_codes"]}"#);
+        let added = check_segment(
+            "武器",
+            r"\C[2]Weapon",
+            &[],
+            "mv_mz",
+            "system_type",
+            no_escapes,
+        );
+        assert!(added.errors.iter().any(
+            |e| matches!(e, QaError::ConstraintViolation { rule } if rule == "no_escape_codes")
+        ));
+        // Cosmetic only: never blocks export.
+        assert!(!added.has_critical_errors());
+        let kept = check_segment(
+            r"\C[2]武器",
+            r"\C[2]Weapon",
+            &[],
+            "mv_mz",
+            "system_type",
+            no_escapes,
+        );
+        assert!(!kept
+            .errors
+            .iter()
+            .any(|e| matches!(e, QaError::ConstraintViolation { .. })));
     }
 
     #[test]

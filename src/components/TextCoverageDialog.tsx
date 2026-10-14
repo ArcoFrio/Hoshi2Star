@@ -36,6 +36,7 @@ import type {
   CategoryChange,
   CategoryState,
   CoverageCategory,
+  CoverageNotCovered,
   CoverageReference,
 } from "@/lib/types";
 import {
@@ -221,6 +222,10 @@ export function TextCoverageDialog({ projectId }: TextCoverageDialogProps) {
                   </ul>
                 </section>
               ))}
+
+              {view.notCovered.length > 0 && (
+                <NotCoveredList items={view.notCovered} />
+              )}
 
               {view.coreWarnings.length > 0 && (
                 <CoreWarnings warnings={view.coreWarnings} />
@@ -506,6 +511,67 @@ function Notices({
         </p>
       )}
     </div>
+  );
+}
+
+function NotCoveredList({ items }: { items: CoverageNotCovered[] }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const byPlugin = useMemo(() => {
+    const groups = new Map<string, CoverageNotCovered[]>();
+    for (const item of items) {
+      const list = groups.get(item.plugin) ?? [];
+      list.push(item);
+      groups.set(item.plugin, list);
+    }
+    return [...groups.entries()];
+  }, [items]);
+  return (
+    <section className="rounded-lg border border-dashed p-3">
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 text-sm font-medium"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5" />
+        )}
+        {t("coverage.notCoveredTitle", { count: items.length })}
+      </button>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {t("coverage.notCoveredHint")}
+      </p>
+      {open && (
+        <ul className="mt-2 space-y-2 text-xs">
+          {byPlugin.map(([plugin, rows]) => (
+            <li key={plugin}>
+              <p className="font-mono font-medium">{plugin}</p>
+              <p className="text-muted-foreground">{rows[0].reason}</p>
+              <ul className="mt-1 space-y-1">
+                {rows.map((row, index) => (
+                  <li
+                    key={`${row.field}-${index}`}
+                    className="rounded bg-muted/50 px-2 py-1"
+                  >
+                    <span className="font-mono">{row.field}</span>
+                    {" — "}
+                    <span>{row.sample}</span>
+                    {row.hint && (
+                      <div className="text-muted-foreground">
+                        {t("coverage.notCoveredHintLabel")} {row.hint}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

@@ -13,7 +13,12 @@ use crate::{
     engines::{
         detector::guess_wolf_version_from_structure,
         filter::{classify_file_type, FileClass},
-        mv_mz::{injector, integrity, originals::SnapshotStore},
+        mv_mz::{
+            coverage::plugins::context_is_fill_in,
+            injector, integrity,
+            originals::SnapshotStore,
+            plugins_js::{parse_plugin_key, PluginsJs},
+        },
         vx_ace::injector as vx_injector,
         wolf::injector::{
             inject_all as wolf_inject_all, inject_all_to_memory as wolf_to_memory,
@@ -355,6 +360,15 @@ pub async fn export_project(
                     vx_injector::inject_and_serialize(&raw, &pairs)
                         .map_err(|e| format!("inject {}: {e}", file.file_name))?
                 }
+                FileClass::PluginsJs => {
+                    let raw = read_original_json(snapshot.as_ref(), &rel, file)?;
+                    let rows = plugin_rows(&state.db, &file.id).await?;
+                    let (output, planned) = build_plugins_js(&raw, &rows)?;
+                    integrity_issues.extend(integrity::verify_plugins_edit(
+                        &rel, &raw, &output, &planned,
+                    ));
+                    output.into_bytes()
+                }
                 _ => {
                     let raw = read_original_json(snapshot.as_ref(), &rel, file)?;
                     let bytes = injector::inject_to_bytes(&raw, &pairs)
@@ -380,6 +394,61 @@ pub async fn export_project(
     let zip_path = game_dir.join("hoshi2star.zip");
     write_zip(&zip_path, entries)?;
     Ok(zip_path.to_string_lossy().into_owned())
+}
+
+/// `(json_key, target, source, context_json)` of every translated plugins.js segment.
+async fn plugin_rows(
+    db: &sqlx::SqlitePool,
+    file_id: &str,
+) -> Result<Vec<(String, String, String, Option<String>)>, String> {
+    sqlx::query_as(
+        "SELECT json_key, target_text, source_text, context_json FROM segments \
+         WHERE source_file_id = ? AND target_text != ''",
+    )
+    .bind(file_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Apply translated plugin parameters to the original plugins.js text.
+/// Returns the new text and the planned edits for the integrity gate.
+fn build_plugins_js(
+    original: &str,
+    rows: &[(String, String, String, Option<String>)],
+) -> Result<(String, Vec<integrity::PlannedPluginEdit>), String> {
+    let mut planned = Vec::with_capacity(rows.len());
+    for (key, target, source, context) in rows {
+        let (plugin, occurrence, path) = parse_plugin_key(key)
+            .ok_or_else(|| format!("invalid plugins.js segment key: {key}"))?;
+        let fill_in = context_is_fill_in(context.as_deref());
+        planned.push(integrity::PlannedPluginEdit {
+            plugin,
+            occurrence,
+            path,
+            value: target.clone(),
+            expected_original: if fill_in {
+                String::new()
+            } else {
+                source.clone()
+            },
+        });
+    }
+    let edits: Vec<(String, u32, Vec<String>, String)> = planned
+        .iter()
+        .map(|edit| {
+            (
+                edit.plugin.clone(),
+                edit.occurrence,
+                edit.path.clone(),
+                edit.value.clone(),
+            )
+        })
+        .collect();
+    let output = PluginsJs::parse(original)
+        .and_then(|plugins| plugins.apply_edits(&edits))
+        .map_err(|e| format!("plugins.js: {e}"))?;
+    Ok((output, planned))
 }
 
 /// Text of an original MV/MZ JSON file: the verified snapshot when one exists
@@ -641,6 +710,22 @@ pub async fn debug_inject_file(
                 .map_err(|e| format!("write {}: {e}", file.file_name))?;
             Ok(file.file_path.clone())
         }
+        FileClass::PluginsJs => {
+            let rel = originals::game_relative_path(&game_path, &file.file_path, &file.file_name);
+            let snapshot =
+                originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &file.project_id)
+                    .await?;
+            let raw = read_original_json(Some(&snapshot), &rel, &file)?;
+            let rows = plugin_rows(&state.db, &file.id).await?;
+            let (output, planned) = build_plugins_js(&raw, &rows)?;
+            let issues = integrity::verify_plugins_edit(&rel, &raw, &output, &planned);
+            if !issues.is_empty() {
+                return Err(integrity::summarize(&issues));
+            }
+            std::fs::write(&file.file_path, output)
+                .map_err(|e| format!("write {}: {e}", file.file_name))?;
+            Ok(file.file_path.clone())
+        }
     }
 }
 
@@ -708,6 +793,38 @@ pub async fn export_debug_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugins_js_build_plans_fill_ins_against_an_empty_original() {
+        let original = "var $plugins =\n[\n{\"name\":\"A\",\"status\":true,\"description\":\"\",\"parameters\":{\"Cmd\":\"図鑑\",\"Row\":\"\"}}\n];\n";
+        let key = |param: &str| {
+            crate::engines::mv_mz::plugins_js::plugin_key("A", 1, &[param.to_string()])
+        };
+        let rows = vec![
+            (key("Cmd"), "Bestiary".to_string(), "図鑑".to_string(), None),
+            (
+                key("Row"),
+                "Kills".to_string(),
+                "倒した数".to_string(),
+                Some(r#"{"fillIn":true}"#.to_string()),
+            ),
+        ];
+        let (output, planned) = build_plugins_js(original, &rows).unwrap();
+        assert!(output.contains(r#""Cmd":"Bestiary""#));
+        assert!(output.contains(r#""Row":"Kills""#));
+        assert_eq!(planned[1].expected_original, "");
+        assert!(
+            integrity::verify_plugins_edit("js/plugins.js", original, &output, &planned).is_empty()
+        );
+
+        let bad = vec![(
+            "/not/a/plugin/key".to_string(),
+            "x".to_string(),
+            "y".to_string(),
+            None,
+        )];
+        assert!(build_plugins_js(original, &bad).is_err());
+    }
 
     /// Regression for a real-world silent break: a Wolf v3 message starting
     /// with the `@N\n` speaker prefix (name/face box lookup) must keep that

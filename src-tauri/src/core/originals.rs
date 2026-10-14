@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use sqlx::SqlitePool;
 
 use crate::engines::filter::{classify_file_type, FileClass};
-use crate::engines::mv_mz::originals::{reconstruct_json, CoreSegment, Provenance, SnapshotStore};
+use crate::engines::mv_mz::originals::{
+    reconstruct_json, reconstruct_plugins_js, CoreSegment, PluginSegment, Provenance, SnapshotStore,
+};
 
 /// Snapshot directory of one project.
 pub fn snapshot_root(data_dir: &Path, project_id: &str) -> PathBuf {
@@ -69,11 +71,17 @@ pub async fn ensure_mv_mz_snapshot(
 
     let mut changed = false;
     for (file_id, file_name, file_path, file_type) in files {
-        if !matches!(classify_file_type(&file_type), FileClass::Json) {
+        let class = classify_file_type(&file_type);
+        if !matches!(class, FileClass::Json | FileClass::PluginsJs) {
             continue;
         }
         let rel = game_relative_path(&game_path, &file_path, &file_name);
         if store.contains(&rel) {
+            continue;
+        }
+        if matches!(class, FileClass::PluginsJs) {
+            store = capture_plugins_js(pool, store, &file_id, &file_path, &rel).await?;
+            changed = true;
             continue;
         }
         let segments: Vec<(String, String, String)> = sqlx::query_as(
@@ -125,6 +133,56 @@ pub async fn ensure_mv_mz_snapshot(
     if changed {
         store.save().map_err(|error| error.to_string())?;
     }
+    Ok(store)
+}
+
+/// Snapshot `js/plugins.js` for a project that already translated plugin text
+/// (normally it is captured verbatim at the first scan, before any export).
+async fn capture_plugins_js(
+    pool: &SqlitePool,
+    mut store: SnapshotStore,
+    file_id: &str,
+    file_path: &str,
+    rel: &str,
+) -> Result<SnapshotStore, String> {
+    let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT json_key, source_text, target_text, context_json FROM segments \
+         WHERE source_file_id = ?",
+    )
+    .bind(file_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    let segments: Vec<PluginSegment> = rows
+        .into_iter()
+        .map(|(key, source, target, context)| PluginSegment {
+            fill_in: crate::engines::mv_mz::coverage::plugins::context_is_fill_in(
+                context.as_deref(),
+            ),
+            key,
+            source,
+            target,
+        })
+        .collect();
+    let path = file_path.to_string();
+    let label = rel.to_string();
+    let (store_back, outcome) = tokio::task::spawn_blocking(move || {
+        let result = std::fs::read(&path)
+            .map_err(|error| format!("read {label}: {error}"))
+            .and_then(|disk| {
+                reconstruct_plugins_js(&label, &disk, &segments).map_err(|error| error.to_string())
+            })
+            .and_then(|rec| {
+                store
+                    .put(&label, &rec.bytes, rec.provenance, rec.drift)
+                    .map_err(|error| error.to_string())
+            });
+        (store, result)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    store = store_back;
+    outcome?;
     Ok(store)
 }
 

@@ -315,7 +315,12 @@
       "suspicious_expansion": "Expansion suspecte : {{sourceChars}} → {{targetChars}} caractères",
       "context_leak": "Contexte voisin recopié : {{neighbor}}",
       "inconsistent_repeated_source": "La même source possède {{variants}} traductions différentes",
-      "terminology_mismatch": "{{severity}} — {{source}} doit utiliser {{target}}"
+      "terminology_mismatch": "{{severity}} — {{source}} doit utiliser {{target}}",
+      "constraint": {
+        "plain_text_value": "Ce plugin convertit les valeurs : la traduction ne doit pas être seulement un nombre, true/false ou du JSON",
+        "no_escape_codes": "Affiché en texte brut ici : les codes d'échappement apparaîtraient tels quels",
+        "other": "Enfreint une règle d'affichage : {{rule}}"
+      }
     },
     "severity": {
       "critical": "Critique",
@@ -567,7 +572,8 @@
     },
     "constraint": {
       "keep_format_specifiers": "Conserver chaque %1, %2…",
-      "no_escape_codes": "Texte brut uniquement : des codes comme \\C[n] ou \\FS[n] s'afficheraient tels quels"
+      "no_escape_codes": "Texte brut uniquement : des codes comme \\C[n] ou \\FS[n] s'afficheraient tels quels",
+      "plain_text_value": "Doit rester du texte brut : le plugin convertit true/false, les nombres et le JSON"
     },
     "category": {
       "system": {
@@ -614,6 +620,9 @@
     "linkedConfirmCancel": "Annuler",
     "linkedConfirmAccept": "J'ai compris, activer",
     "autoEnabled": "{{count}} textes supplémentaires visibles par le joueur ajoutés (voir Couverture du texte)",
-    "scanFailed": "Impossible d'analyser le texte supplémentaire : {{error}}"
+    "scanFailed": "Impossible d'analyser le texte supplémentaire : {{error}}",
+    "notCoveredTitle": "Texte de plugin non couvert ({{count}})",
+    "notCoveredHint": "Ces paramètres de plugin contiennent du texte, mais aucun profil vérifié ne prouve qu'ils servent seulement à l'affichage : ils restent non traduits. Un indice est une supposition tirée du code du plugin, jamais une garantie.",
+    "notCoveredHintLabel": "Indice :"
   }
 }

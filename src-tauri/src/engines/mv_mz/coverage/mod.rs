@@ -14,15 +14,18 @@
 //! The scan is pure: callers pass the pristine game files and receive the
 //! report. Nothing here touches the database or the game folder.
 
+pub mod plugins;
 pub mod sites;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 
+pub use self::plugins::NotCovered;
 use self::sites::{excerpt, token_occurs, Site, SiteKind};
 use crate::engines::filter;
 use crate::engines::mv_mz::extractor::SegmentKind;
 use crate::engines::mv_mz::plugins_js::PluginsJs;
+use crate::engines::mv_mz::profiles::ProfileSet;
 use crate::llm::tokenizer::Engine as TokEngine;
 
 /// Bump when classification rules change (part of the scan digest).
@@ -61,6 +64,40 @@ pub enum Constraint {
     /// The value is drawn with `drawText`: escape codes (`\C[n]`, `\FS[n]`…)
     /// would be shown literally.
     NoEscapeCodes,
+    /// The plugin converts values (`true`/`false`, numbers, JSON) before use:
+    /// the translation must stay plain text.
+    PlainTextValue,
+}
+
+impl Constraint {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::KeepFormatSpecifiers => "keep_format_specifiers",
+            Self::NoEscapeCodes => "no_escape_codes",
+            Self::PlainTextValue => "plain_text_value",
+        }
+    }
+
+    fn from_str(rule: &str) -> Option<Self> {
+        match rule {
+            "keep_format_specifiers" => Some(Self::KeepFormatSpecifiers),
+            "no_escape_codes" => Some(Self::NoEscapeCodes),
+            "plain_text_value" => Some(Self::PlainTextValue),
+            _ => None,
+        }
+    }
+
+    /// Constraints recorded in a segment's `context_json` (`"constraints"`).
+    pub fn from_context(context_json: &str) -> Vec<Self> {
+        serde_json::from_str::<Value>(context_json)
+            .ok()
+            .and_then(|value| value.get("constraints").cloned())
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|rule| rule.as_str().and_then(Self::from_str))
+            .collect()
+    }
 }
 
 /// A string that enabling the category turns into a segment.
@@ -74,6 +111,9 @@ pub struct Candidate {
     pub source: String,
     pub kind: SegmentKind,
     pub context_json: String,
+    /// Whether this text is looked up in identifier sites (false for values
+    /// that do not exist in the game data, e.g. plugin fill-in defaults).
+    pub reference_check: bool,
 }
 
 /// One place where a candidate string is used as an identifier.
@@ -104,6 +144,10 @@ pub struct TextCategory {
     pub references: Vec<Reference>,
     pub reference_count: usize,
     pub blocked_reason: Option<String>,
+    /// Plugin whose verified profile produced this category. That plugin's
+    /// own code was reviewed with the profile, so literals in it (defaults,
+    /// tag keywords) are not references to these texts.
+    pub owner_plugin: Option<String>,
 }
 
 /// An existing (core) translation whose source is also used as an identifier.
@@ -119,6 +163,8 @@ pub struct CoreWarning {
 pub struct CoverageReport {
     pub categories: Vec<TextCategory>,
     pub core_warnings: Vec<CoreWarning>,
+    /// Plugin text left out because no verified profile covers it.
+    pub not_covered: Vec<NotCovered>,
     /// Set when `plugins.js` exists but could not be read safely: plugin
     /// parameters are then neither scanned for references nor offered.
     pub plugins_unreadable: Option<String>,
@@ -141,6 +187,10 @@ pub struct CoverageInput<'a> {
     pub plugin_sources: &'a [(String, String)],
     /// Canonical core segments to check for identifier use.
     pub core_sources: &'a [CoreSource],
+    /// Game-relative path of `plugins.js` (snapshot key / zip entry).
+    pub plugins_rel: &'a str,
+    /// Verified plugin profiles.
+    pub profiles: &'a ProfileSet,
 }
 
 /// Scan the game and classify every optional text category.
@@ -154,30 +204,74 @@ pub fn scan(input: &CoverageInput<'_>) -> CoverageReport {
     sites::collect_data_sites(&named, &mut sites);
 
     let mut report = CoverageReport::default();
+    let mut plugin_outcome = plugins::PluginOutcome::default();
     if let Some(text) = input.plugins_js {
         match PluginsJs::parse(text) {
-            Ok(plugins) => sites::collect_plugin_param_sites(&plugins, &mut sites),
+            Ok(parsed) => {
+                sites::collect_plugin_param_sites(&parsed, &mut sites);
+                plugin_outcome = plugins::plugin_categories(
+                    &parsed,
+                    input.plugins_rel,
+                    input.plugin_sources,
+                    input.data_files,
+                    input.profiles,
+                );
+            }
             Err(error) => report.plugins_unreadable = Some(error.to_string()),
         }
     }
     for (plugin, source) in input.plugin_sources {
         sites::collect_plugin_source_sites(plugin, source, &mut sites);
     }
+    // Display text and editor memos proven by a verified profile, and the
+    // core-extracted TextPicture text, are not identifiers.
+    sites.retain(|site| match (&site.plugin, &site.field) {
+        (Some(plugin), Some(field)) => {
+            !plugin_outcome
+                .excluded_sites
+                .contains(&(plugin.clone(), field.clone()))
+                && !(site.kind == SiteKind::PluginCommandArg
+                    && plugin == "TextPicture"
+                    && field == "set.text")
+        }
+        _ => true,
+    });
 
     let mut categories = system_type_categories(input.data_files);
     categories.extend(map_display_name_category(input.data_files));
+    categories.extend(plugin_outcome.categories);
     for category in &mut categories {
         classify(category, &sites);
     }
+    categories.extend(plugin_outcome.blocked);
     categories.retain(|category| !category.candidates.is_empty());
     report.categories = categories;
+    report.not_covered = plugin_outcome.not_covered;
     report.core_warnings = core_warnings(input.core_sources, &sites);
     report
 }
 
 /// Apply the reference check to `category`.
 fn classify(category: &mut TextCategory, sites: &[Site]) {
-    let references = find_references(category.candidates.iter().map(|c| c.source.as_str()), sites);
+    let owner = category.owner_plugin.as_deref();
+    let foreign: Vec<Site> = sites
+        .iter()
+        .filter(|site| {
+            !(site.kind == SiteKind::PluginSource
+                && site.plugin.as_deref() == owner
+                && owner.is_some())
+        })
+        .cloned()
+        .collect();
+    let sites = foreign.as_slice();
+    let references = find_references(
+        category
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.reference_check)
+            .map(|candidate| candidate.source.as_str()),
+        sites,
+    );
     category.reference_count = references.len();
     if references.is_empty() {
         category.state = CategoryState::Verified;
@@ -256,12 +350,14 @@ fn core_warnings(core_sources: &[CoreSource], sites: &[Site]) -> Vec<CoreWarning
     warnings
 }
 
-/// Shared `context_json` for category segments.
-pub fn category_context(category: &str, extra: Value) -> String {
+/// Shared `context_json` for category segments (the constraints are what QA
+/// enforces on the translation).
+pub fn category_context(category: &str, constraints: &[Constraint], extra: Value) -> String {
     let mut context = json!({
         "schemaVersion": 1,
         "engine": "rpg_maker_mv_mz",
         "category": category,
+        "constraints": constraints.iter().map(Constraint::as_str).collect::<Vec<_>>(),
     });
     if let (Value::Object(base), Value::Object(more)) = (&mut context, extra) {
         base.extend(more);
@@ -336,8 +432,10 @@ fn system_type_categories(files: &[(String, String, Value)]) -> Vec<TextCategory
                                 kind: SegmentKind::SystemType,
                                 context_json: category_context(
                                     list.key,
+                                    &[Constraint::NoEscapeCodes],
                                     json!({ "field": list.field, "index": index }),
                                 ),
+                                reference_check: true,
                             })
                         })
                         .collect()
@@ -364,6 +462,7 @@ fn system_type_categories(files: &[(String, String, Value)]) -> Vec<TextCategory
                 references: Vec::new(),
                 reference_count: 0,
                 blocked_reason: None,
+                owner_plugin: None,
             }
         })
         .collect()
@@ -383,8 +482,10 @@ fn map_display_name_category(files: &[(String, String, Value)]) -> Option<TextCa
                 kind: SegmentKind::MapDisplayName,
                 context_json: category_context(
                     "map.display_name",
+                    &[Constraint::NoEscapeCodes],
                     json!({ "field": "displayName" }),
                 ),
+                reference_check: true,
             })
         })
         .collect();
@@ -407,6 +508,7 @@ fn map_display_name_category(files: &[(String, String, Value)]) -> Option<TextCa
         references: Vec::new(),
         reference_count: 0,
         blocked_reason: None,
+        owner_plugin: None,
     })
 }
 
@@ -446,6 +548,8 @@ mod tests {
             plugins_js: None,
             plugin_sources: &[],
             core_sources: &[],
+            plugins_rel: "js/plugins.js",
+            profiles: &ProfileSet::default(),
         });
 
         let skills = category(&report, "system.skill_types");
@@ -491,6 +595,8 @@ mod tests {
             plugins_js: Some(plugins),
             plugin_sources: &[("Lit".into(), "const e = '炎';".into())],
             core_sources: &[],
+            plugins_rel: "js/plugins.js",
+            profiles: &ProfileSet::default(),
         });
         let equip = category(&report, "system.equip_types");
         assert_eq!(equip.state, CategoryState::Blocked);
@@ -533,6 +639,8 @@ mod tests {
                 segment_kind: "actor_name".into(),
                 source: "恵".into(),
             }],
+            plugins_rel: "js/plugins.js",
+            profiles: &ProfileSet::default(),
         });
         let maps = category(&report, "map.display_name");
         assert_eq!(maps.state, CategoryState::Verified);
@@ -549,6 +657,8 @@ mod tests {
             plugins_js: Some("var $plugins = [ broken"),
             plugin_sources: &[],
             core_sources: &[],
+            plugins_rel: "js/plugins.js",
+            profiles: &ProfileSet::default(),
         });
         assert!(report.plugins_unreadable.is_some());
     }

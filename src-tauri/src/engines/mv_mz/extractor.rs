@@ -46,6 +46,10 @@ pub enum SegmentKind {
     SystemType,
     /// Map `displayName` (map name popup) — optional text category.
     MapDisplayName,
+    /// Short plugin label (menu/option/command names) — optional category.
+    PluginUiText,
+    /// Plugin sentence or template (battle log, popups) — optional category.
+    PluginMessage,
 }
 
 impl SegmentKind {
@@ -75,6 +79,8 @@ impl SegmentKind {
             Self::GameTitle => "game_title",
             Self::SystemType => "system_type",
             Self::MapDisplayName => "map_display_name",
+            Self::PluginUiText => "plugin_ui_text",
+            Self::PluginMessage => "plugin_message",
         }
     }
 }

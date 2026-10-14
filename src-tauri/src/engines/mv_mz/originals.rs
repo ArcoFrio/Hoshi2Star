@@ -333,6 +333,81 @@ pub fn reconstruct_json(
     })
 }
 
+/// One translated `plugins.js` parameter, as recorded in the project.
+#[derive(Debug, Clone)]
+pub struct PluginSegment {
+    pub key: String,
+    pub source: String,
+    pub target: String,
+    /// The original field was empty (the source is the plugin's default).
+    pub fill_in: bool,
+}
+
+/// Rebuild the original `plugins.js` from its on-disk text: every recorded
+/// parameter holding its target is reset to the source (or to empty for a
+/// fill-in); anything else unexplained is drift. Untouched text is kept
+/// verbatim — the edits are span surgery, like the export itself.
+pub fn reconstruct_plugins_js(
+    file_label: &str,
+    disk: &[u8],
+    segments: &[PluginSegment],
+) -> Result<Reconstruction, OriginalsError> {
+    use crate::engines::mv_mz::plugins_js::{parse_plugin_key, PluginsJs};
+
+    let invalid = |reason: String| OriginalsError::InvalidJson(file_label.to_string(), reason);
+    let text = std::str::from_utf8(disk).map_err(|error| invalid(error.to_string()))?;
+    let plugins = PluginsJs::parse(text).map_err(|error| invalid(error.to_string()))?;
+
+    let mut edits = Vec::new();
+    let mut drift = Vec::new();
+    for segment in segments {
+        let expected = if segment.fill_in {
+            String::new()
+        } else {
+            segment.source.clone()
+        };
+        let current = parse_plugin_key(&segment.key).and_then(|(name, occurrence, path)| {
+            plugins
+                .get(&name, occurrence, &path)
+                .ok()
+                .map(|value| (name, occurrence, path, value))
+        });
+        match current {
+            Some((_, _, _, value)) if value == expected => {}
+            Some((name, occurrence, path, value))
+                if !segment.target.is_empty() && value == segment.target =>
+            {
+                edits.push((name, occurrence, path, expected));
+            }
+            Some((_, _, _, value)) => drift.push(DriftedPointer {
+                key: segment.key.clone(),
+                expected,
+                found: Some(value),
+            }),
+            None => drift.push(DriftedPointer {
+                key: segment.key.clone(),
+                expected,
+                found: None,
+            }),
+        }
+    }
+    if edits.is_empty() {
+        return Ok(Reconstruction {
+            bytes: disk.to_vec(),
+            provenance: Provenance::Pristine,
+            drift,
+        });
+    }
+    let rebuilt = plugins
+        .apply_edits(&edits)
+        .map_err(|error| invalid(error.to_string()))?;
+    Ok(Reconstruction {
+        bytes: rebuilt.into_bytes(),
+        provenance: Provenance::Reconstructed,
+        drift,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -462,6 +537,52 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn exported_plugins_js_is_reconstructed_by_span_surgery() {
+        let original = "// header\r\nvar $plugins =\r\n[\r\n{\"name\":\"A\",\"status\":true,\"description\":\"\",\"parameters\":{\"Cmd\":\"図鑑\",\"Rows\":\"[\\\"{\\\\\\\"label\\\\\\\":\\\\\\\"\\\\\\\"}\\\"]\"}},\r\n{\"name\":\"B\",\"status\":true,\"description\":\"\",\"parameters\":{\"x\":\"未\"}}\r\n];\r\n";
+        let plugins = crate::engines::mv_mz::plugins_js::PluginsJs::parse(original).unwrap();
+        let exported = plugins
+            .apply_edits(&[
+                ("A".into(), 1, vec!["Cmd".into()], "Bestiary".into()),
+                (
+                    "A".into(),
+                    1,
+                    vec!["Rows".into(), "0".into(), "label".into()],
+                    "Kills".into(),
+                ),
+            ])
+            .unwrap();
+        let key = |path: &[&str]| {
+            crate::engines::mv_mz::plugins_js::plugin_key(
+                "A",
+                1,
+                &path.iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+            )
+        };
+        let rec = reconstruct_plugins_js(
+            "js/plugins.js",
+            exported.as_bytes(),
+            &[
+                PluginSegment {
+                    key: key(&["Cmd"]),
+                    source: "図鑑".into(),
+                    target: "Bestiary".into(),
+                    fill_in: false,
+                },
+                PluginSegment {
+                    key: key(&["Rows", "0", "label"]),
+                    source: "倒した数".into(),
+                    target: "Kills".into(),
+                    fill_in: true,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(rec.provenance, Provenance::Reconstructed);
+        assert!(rec.drift.is_empty());
+        assert_eq!(String::from_utf8(rec.bytes).unwrap(), original);
     }
 
     #[test]

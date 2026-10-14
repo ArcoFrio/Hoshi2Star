@@ -158,7 +158,8 @@ export type QaErrorType =
       source_term: string;
       expected_targets: string[];
       severity: "critical" | "warning" | "info";
-    };
+    }
+  | { type: "constraint_violation"; rule: string };
 
 export interface QaResult {
   score: number;
@@ -552,6 +553,14 @@ export interface CoverageCoreWarning {
   references: CoverageReference[];
 }
 
+export interface CoverageNotCovered {
+  plugin: string;
+  field: string;
+  sample: string;
+  reason: string;
+  hint: string | null;
+}
+
 export interface CoverageView {
   supported: boolean;
   hasDecisions: boolean;
@@ -560,6 +569,7 @@ export interface CoverageView {
   pluginsUnreadable: string | null;
   categories: CoverageCategory[];
   coreWarnings: CoverageCoreWarning[];
+  notCovered: CoverageNotCovered[];
 }
 
 export interface CategoryChange {

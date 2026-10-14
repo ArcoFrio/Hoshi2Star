@@ -315,7 +315,12 @@
       "suspicious_expansion": "Suspicious expansion: {{sourceChars}} → {{targetChars}} characters",
       "context_leak": "Neighbouring context copied: {{neighbor}}",
       "inconsistent_repeated_source": "The same source has {{variants}} different translations",
-      "terminology_mismatch": "{{severity}} — {{source}} must use {{target}}"
+      "terminology_mismatch": "{{severity}} — {{source}} must use {{target}}",
+      "constraint": {
+        "plain_text_value": "This plugin converts values: the translation must not be only a number, true/false or JSON",
+        "no_escape_codes": "Drawn as plain text here: escape codes would be shown literally",
+        "other": "Breaks a display rule: {{rule}}"
+      }
     },
     "severity": {
       "critical": "Critical",
@@ -567,7 +572,8 @@
     },
     "constraint": {
       "keep_format_specifiers": "Keep every %1, %2… placeholder",
-      "no_escape_codes": "Plain text only: codes like \\C[n] or \\FS[n] would be shown literally"
+      "no_escape_codes": "Plain text only: codes like \\C[n] or \\FS[n] would be shown literally",
+      "plain_text_value": "Must stay plain text: the plugin turns true/false, numbers and JSON into other types"
     },
     "category": {
       "system": {
@@ -614,6 +620,9 @@
     "linkedConfirmCancel": "Cancel",
     "linkedConfirmAccept": "I understand, enable",
     "autoEnabled": "{{count}} additional player-visible texts added (see Text coverage)",
-    "scanFailed": "Could not scan for additional text: {{error}}"
+    "scanFailed": "Could not scan for additional text: {{error}}",
+    "notCoveredTitle": "Plugin text not covered ({{count}})",
+    "notCoveredHint": "These plugin settings contain text, but no verified profile proves they are display-only, so they stay untranslated. A hint is a guess from the plugin code, never a guarantee.",
+    "notCoveredHintLabel": "Hint:"
   }
 }

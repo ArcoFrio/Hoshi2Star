@@ -24,6 +24,15 @@ function errorIcon(error: QaErrorType) {
     case "context_leak":
     case "inconsistent_repeated_source":
       return <AlertTriangle className="h-3 w-3 text-red-400 shrink-0" />;
+    case "constraint_violation":
+      return (
+        <AlertTriangle
+          className={cn(
+            "h-3 w-3 shrink-0",
+            error.rule === "no_escape_codes" ? "text-yellow-400" : "text-red-400",
+          )}
+        />
+      );
     case "line_too_long":
       return <AlertTriangle className="h-3 w-3 text-yellow-400 shrink-0" />;
     case "bom_detected":
@@ -88,6 +97,10 @@ function errorLabel(
         source: error.source_term,
         target: error.expected_targets.join(" / "),
         severity: t(`qaPanel.severity.${error.severity}`),
+      });
+    case "constraint_violation":
+      return t(`qaPanel.errors.constraint.${error.rule}`, {
+        defaultValue: t("qaPanel.errors.constraint.other", { rule: error.rule }),
       });
   }
 }

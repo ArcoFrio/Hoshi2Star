@@ -40,6 +40,7 @@ const VIEW: CoverageView = {
   driftedFiles: [],
   pluginsUnreadable: null,
   coreWarnings: [],
+  notCovered: [],
   categories: [
     category({}),
     category({
