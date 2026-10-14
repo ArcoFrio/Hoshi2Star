@@ -4,5 +4,11 @@
 //!
 //! Applied at export only: translations in the database stay line-for-line.
 
+pub mod fit;
 pub mod font;
 pub mod geometry;
+pub mod message;
+pub mod simulate;
+pub mod text;
+pub mod verify;
+pub mod wrap;

@@ -91,6 +91,202 @@ fn real_game_font_widths() {
     std::fs::write(out, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
 }
 
+/// Text-fitting dump: fits every Show Text message of `H2S_MZ_GAME_DIR`
+/// (original data) with the translations of the project database copy
+/// `H2S_FIT_DB`, measured with the font file `H2S_FONT_FILE`, and writes
+/// inputs, outputs and simulated pages to `H2S_FIT_OUT` (checked against the
+/// engine's own code by a scratch harness).
+#[tokio::test]
+#[ignore = "requires a private game: set H2S_MZ_GAME_DIR, H2S_FIT_DB, H2S_FONT_FILE, H2S_FIT_OUT"]
+async fn real_game_fit_dump() {
+    use hoshi2star_lib::engines::mv_mz::layout::fit::{
+        fit_message, FitContext, FitOutcome, FitSettings, LineBreaks, MessageInput, MessageLine,
+        Overflow,
+    };
+    use hoshi2star_lib::engines::mv_mz::layout::font::{GameFont, Metrics};
+    use hoshi2star_lib::engines::mv_mz::layout::geometry::Geometry;
+    use hoshi2star_lib::engines::mv_mz::layout::message::messages_in;
+    use hoshi2star_lib::engines::mv_mz::layout::text::Inserts;
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    let vars = [
+        "H2S_MZ_GAME_DIR",
+        "H2S_FIT_DB",
+        "H2S_FONT_FILE",
+        "H2S_FIT_OUT",
+    ]
+    .map(std::env::var);
+    let [Ok(game), Ok(db_path), Ok(font_file), Ok(out)] = vars else {
+        eprintln!("H2S_MZ_GAME_DIR / H2S_FIT_DB / H2S_FONT_FILE / H2S_FIT_OUT not set; skipping");
+        return;
+    };
+    let data = PathBuf::from(game).join("data");
+    let read = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(data.join(name)).unwrap()).unwrap()
+    };
+    let options =
+        sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite://{db_path}?mode=ro"))
+            .unwrap();
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .unwrap();
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT f.file_name, s.json_key, s.target_text FROM segments s \
+         JOIN source_files f ON f.id = s.source_file_id WHERE s.target_text != ''",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let targets: HashMap<(String, String), String> =
+        rows.into_iter().map(|(f, k, t)| ((f, k), t)).collect();
+    let target_or = |file: &str, key: &str, fallback: &str| {
+        targets
+            .get(&(file.to_string(), key.to_string()))
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
+    };
+
+    let system = read("System.json");
+    let geometry = Geometry::from_system(&system);
+    let metrics = Metrics::Font(GameFont::from_bytes(&std::fs::read(font_file).unwrap()).unwrap());
+    let mut inserts = Inserts {
+        currency: target_or(
+            "System.json",
+            "/currencyUnit",
+            system["currencyUnit"].as_str().unwrap_or_default(),
+        ),
+        ..Inserts::default()
+    };
+    for (id, actor) in read("Actors.json").as_array().unwrap().iter().enumerate() {
+        if let Some(name) = actor.get("name").and_then(|n| n.as_str()) {
+            inserts.actor_names.insert(
+                id as u32,
+                target_or("Actors.json", &format!("/{id}/name"), name),
+            );
+        }
+    }
+    let ctx = FitContext {
+        metrics: &metrics,
+        geometry: &geometry,
+        inserts: &inserts,
+        no_space_join: false,
+        plain_description_first_line: false,
+    };
+    // Optional: H2S_FIT_OVERFLOW=shrink|leave, H2S_FIT_FONT=<px>, H2S_FIT_KEEP=1.
+    let settings = FitSettings {
+        line_breaks: if std::env::var("H2S_FIT_KEEP").is_ok() {
+            LineBreaks::Keep
+        } else {
+            LineBreaks::Reflow
+        },
+        overflow: match std::env::var("H2S_FIT_OVERFLOW").as_deref() {
+            Ok("shrink") => Overflow::Shrink,
+            Ok("leave") => Overflow::Leave,
+            _ => Overflow::NewPage,
+        },
+        min_font_size: 20,
+        dialogue_font_size: std::env::var("H2S_FIT_FONT")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+    };
+
+    let mut files: Vec<String> = std::fs::read_dir(&data)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .filter(|n| {
+            (n.starts_with("Map") && n != "MapInfos.json")
+                || n == "CommonEvents.json"
+                || n == "Troops.json"
+        })
+        .collect();
+    files.sort();
+    let mut records = Vec::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut chars: std::collections::BTreeSet<char> = Default::default();
+    for file in &files {
+        let json = read(file);
+        for message in messages_in(file, &json) {
+            let lines: Vec<MessageLine> = message
+                .lines
+                .iter()
+                .map(|(index, original)| {
+                    let key = message.line_pointer(*index);
+                    match targets.get(&(file.clone(), key)) {
+                        Some(target) => MessageLine {
+                            text: target.clone(),
+                            writable: true,
+                        },
+                        None => MessageLine {
+                            text: original.clone(),
+                            writable: false,
+                        },
+                    }
+                })
+                .collect();
+            let input = MessageInput {
+                lines: lines.clone(),
+                face: message.face,
+            };
+            let fitted = fit_message(&input, &ctx, &settings);
+            let kind = match &fitted.outcome {
+                FitOutcome::NewPage { .. } => "newPage".to_string(),
+                FitOutcome::Shrunk { .. } => "shrunk".to_string(),
+                FitOutcome::TooLong { reason } => format!("tooLong: {reason}"),
+                FitOutcome::Skipped { reason } => format!("skipped: {reason}"),
+                other => format!("{other:?}"),
+            };
+            *counts.entry(kind).or_default() += 1;
+            let output: Vec<String> = lines
+                .iter()
+                .zip(&fitted.values)
+                .map(|(line, value)| value.clone().unwrap_or_else(|| line.text.clone()))
+                .collect();
+            chars.extend(output.iter().flat_map(|t| t.chars()));
+            records.push(serde_json::json!({
+                "file": file,
+                "pointer": message.pointer(),
+                "face": message.face,
+                "input": lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>(),
+                "output": output,
+                "outcome": fitted.outcome,
+                "pages": fitted.pages.iter().map(|page| page.lines.iter().map(|line| {
+                    serde_json::json!({
+                        "text": line.runs.iter().map(|r| r.text.as_str()).collect::<String>(),
+                        "right": line.right,
+                        "overflow": line.overflow,
+                    })
+                }).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            }));
+        }
+    }
+    chars.extend(inserts.actor_names.values().flat_map(|n| n.chars()));
+    chars.extend("0".chars());
+    let widths: serde_json::Map<String, serde_json::Value> = chars
+        .iter()
+        .map(|c| {
+            (
+                c.to_string(),
+                serde_json::json!(metrics.char_width(*c, 1.0).0),
+            )
+        })
+        .collect();
+    eprintln!("== fitted {} message(s): {counts:#?}", records.len());
+    std::fs::write(
+        out,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "geometry": geometry,
+            "actors": inserts.actor_names,
+            "currency": inserts.currency,
+            "widths": widths,
+            "messages": records,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires a private game: set H2S_MZ_GAME_DIR"]
 async fn real_game_scan_enable_translate_export() {
