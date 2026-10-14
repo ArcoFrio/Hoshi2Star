@@ -99,7 +99,7 @@ fn copy_tree(source: &Path, destination: &Path) {
 async fn mock_app(database: &Path) -> tauri::App<tauri::test::MockRuntime> {
     let pool = db::pool::init(database.to_str().unwrap()).await.unwrap();
     mock_builder()
-        .manage(AppState::new(pool).unwrap())
+        .manage(AppState::new(pool, database.with_extension("data")).unwrap())
         .build(mock_context(noop_assets()))
         .unwrap()
 }

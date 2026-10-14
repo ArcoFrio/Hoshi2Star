@@ -63,7 +63,13 @@ async fn export_succeeds_after_repairing_translation_secs() {
         .await
         .expect("startup should repair the historical schema");
     let app = mock_builder()
-        .manage(AppState::new(repaired).expect("terminology service"))
+        .manage(
+            AppState::new(
+                repaired,
+                std::path::PathBuf::from(format!("{db_path}.data")),
+            )
+            .expect("terminology service"),
+        )
         .build(mock_context(noop_assets()))
         .expect("mock app build");
 

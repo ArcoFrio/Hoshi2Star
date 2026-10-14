@@ -103,7 +103,7 @@ async fn disposable_project(
     let database = workspace.path().join("pilot.db");
     let pool = db::pool::init(database.to_str().unwrap()).await.unwrap();
     let app = mock_builder()
-        .manage(AppState::new(pool).unwrap())
+        .manage(AppState::new(pool, database.with_extension("data")).unwrap())
         .build(mock_context(noop_assets()))
         .unwrap();
     let opened = open_project(

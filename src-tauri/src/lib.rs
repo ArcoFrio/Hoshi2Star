@@ -43,7 +43,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            let db_path = app.path().app_data_dir()?.join("hoshi2star.db");
+            let data_dir = app.path().app_data_dir()?;
+            let db_path = data_dir.join("hoshi2star.db");
 
             // Ensure the data directory exists before connecting
             if let Some(parent) = db_path.parent() {
@@ -55,7 +56,7 @@ pub fn run() {
             let pool = tauri::async_runtime::block_on(db::pool::init(&path_str))
                 .map_err(|e| e.to_string())?;
 
-            app.manage(AppState::new(pool).map_err(|error| error.to_string())?);
+            app.manage(AppState::new(pool, data_dir).map_err(|error| error.to_string())?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
