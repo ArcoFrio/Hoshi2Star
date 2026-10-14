@@ -51,6 +51,46 @@ fn zip_entries(zip_path: &str) -> BTreeMap<String, Vec<u8>> {
     entries
 }
 
+/// Text-fitting width check: measures `H2S_FONT_CORPUS` (JSON list of
+/// strings) with the game's main font at its font size and writes
+/// `[{text, width, missing}]` to `H2S_FONT_OUT`, for comparison with the
+/// browser's `measureText` (per character, as normal play draws messages).
+#[test]
+#[ignore = "requires a private game: set H2S_MZ_GAME_DIR, H2S_FONT_CORPUS, H2S_FONT_OUT"]
+fn real_game_font_widths() {
+    use hoshi2star_lib::engines::mv_mz::layout::font::{GameFont, Metrics};
+    use hoshi2star_lib::engines::mv_mz::layout::geometry::Geometry;
+
+    let (Ok(game), Ok(corpus), Ok(out)) = (
+        std::env::var("H2S_MZ_GAME_DIR"),
+        std::env::var("H2S_FONT_CORPUS"),
+        std::env::var("H2S_FONT_OUT"),
+    ) else {
+        eprintln!("H2S_MZ_GAME_DIR / H2S_FONT_CORPUS / H2S_FONT_OUT not set; skipping");
+        return;
+    };
+    let game = PathBuf::from(game);
+    let system: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(game.join("data/System.json")).unwrap()).unwrap();
+    let geometry = Geometry::from_system(&system);
+    let font_file = geometry.font_file.clone().expect("mainFontFilename");
+    let metrics = Metrics::Font(
+        GameFont::from_bytes(&std::fs::read(game.join("fonts").join(font_file)).unwrap()).unwrap(),
+    );
+    let corpus: Vec<String> = serde_json::from_slice(&std::fs::read(corpus).unwrap()).unwrap();
+    let rows: Vec<serde_json::Value> = corpus
+        .iter()
+        .map(|text| {
+            serde_json::json!({
+                "text": text,
+                "width": metrics.text_width(text, geometry.font_size),
+                "missing": metrics.missing_chars(text).iter().collect::<String>(),
+            })
+        })
+        .collect();
+    std::fs::write(out, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires a private game: set H2S_MZ_GAME_DIR"]
 async fn real_game_scan_enable_translate_export() {
