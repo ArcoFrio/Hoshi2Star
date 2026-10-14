@@ -127,10 +127,17 @@ async fn opened() -> Opened {
     };
     let known: HashMap<&str, &str> = TRANSLATIONS.iter().copied().collect();
     let db = &opened.app.state::<AppState>().db;
-    for (index, (id, _, source)) in segments(&opened).await.into_iter().enumerate() {
-        let target = known
-            .get(source.as_str())
-            .map_or_else(|| format!("Text {index}"), |t| t.to_string());
+    // Same source → same stand-in (repeated sources must stay consistent).
+    let mut stand_ins: HashMap<String, String> = HashMap::new();
+    for (id, _, source) in segments(&opened).await {
+        let next = stand_ins.len();
+        let target = match known.get(source.as_str()) {
+            Some(text) => text.to_string(),
+            None => stand_ins
+                .entry(source.clone())
+                .or_insert_with(|| format!("Text {next}"))
+                .clone(),
+        };
         sqlx::query("UPDATE segments SET target_text = ?, status = 'translated' WHERE id = ?")
             .bind(target)
             .bind(id)
@@ -328,4 +335,148 @@ async fn line_width_qa_is_dropped_only_for_fitted_texts() {
         .await
         .unwrap();
     assert_eq!(long_line_errors(&after), 0, "fitting lays it out at export");
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+fn zip_entries(zip_path: &str) -> std::collections::BTreeMap<String, Vec<u8>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+    let mut entries = std::collections::BTreeMap::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        entries.insert(entry.name().to_string(), bytes);
+    }
+    entries
+}
+
+fn zip_json(zip_path: &str, entry: &str) -> serde_json::Value {
+    serde_json::from_slice(&zip_entries(zip_path)[entry]).unwrap()
+}
+
+/// Text of command `index` of the fixture's only event list.
+fn line(map: &serde_json::Value, index: usize) -> String {
+    map["events"][1]["pages"][0]["list"][index]["parameters"][0]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.replace('\u{000C}', " ")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+fn translation(source: &str) -> &'static str {
+    TRANSLATIONS
+        .iter()
+        .find(|(s, _)| *s == source)
+        .map(|(_, t)| *t)
+        .unwrap()
+}
+
+async fn export(opened: &Opened, font_size: Option<u32>) -> String {
+    hoshi2star_lib::commands::export::export_project(
+        opened.project_id.clone(),
+        font_size,
+        true,
+        None,
+        opened.app.state(),
+    )
+    .await
+    .expect("export passes QA and the integrity gate")
+}
+
+#[tokio::test]
+async fn export_lays_out_dialogue_and_descriptions_only_when_enabled() {
+    let opened = opened().await;
+    let plain = zip_json(&export(&opened, None).await, "data/Map001.json");
+    assert_eq!(line(&plain, 1), translation("長い台詞の一行目。"));
+
+    set_text_fit(opened.project_id.clone(), enabled(), opened.app.state())
+        .await
+        .unwrap();
+    let zip = export(&opened, None).await;
+    let map = zip_json(&zip, "data/Map001.json");
+    // A: rewrapped inside its own two commands, words unchanged.
+    let a = format!("{}\n{}", line(&map, 1), line(&map, 2));
+    assert_ne!(line(&map, 1), translation("長い台詞の一行目。"));
+    assert_eq!(
+        words(&a),
+        words(&format!(
+            "{} {}",
+            translation("長い台詞の一行目。"),
+            translation("二行目。")
+        ))
+    );
+    // B (portrait): continues on a second page.
+    let b: Vec<String> = (4..=7).map(|i| line(&map, i)).collect();
+    assert_eq!(b.join("\n").matches('\u{000C}').count(), 1);
+    // C: the verbatim line stays as it is.
+    assert_eq!(line(&map, 10), "……");
+    // D (timed): shrunk, never paged.
+    assert!(line(&map, 13).starts_with("\\FS["));
+    let d: String = (13..=16).map(|i| line(&map, i)).collect();
+    assert!(!d.contains('\u{000C}'));
+    // E: fits as translated.
+    assert_eq!(line(&map, 18), "What will you do?");
+    // A description rewrapped into the 2-line help box.
+    let items = zip_json(&zip, "data/Items.json");
+    let description = items[2]["description"].as_str().unwrap();
+    assert_eq!(description.lines().count(), 2);
+    assert_eq!(
+        words(description),
+        words(translation("体力を全回復する。\n戦闘中にも使える。"))
+    );
+    // Exporting again gives the same archive.
+    assert_eq!(zip_entries(&export(&opened, None).await), zip_entries(&zip));
+}
+
+#[tokio::test]
+async fn export_font_size_is_emitted_once_per_page_for_fitted_dialogue() {
+    let opened = opened().await;
+    let mut settings = enabled();
+    settings.enabled_descriptions = false;
+    set_text_fit(opened.project_id.clone(), settings, opened.app.state())
+        .await
+        .unwrap();
+    let map = zip_json(&export(&opened, Some(22)).await, "data/Map001.json");
+    assert!(line(&map, 1).starts_with("\\FS[22]"));
+    assert!(!line(&map, 2).starts_with("\\FS["), "not a page start");
+    assert!(line(&map, 18).starts_with("\\FS[22]"));
+    // Choices are not fitted: the per-line prefix applies as before.
+    let choice = map["events"][1]["pages"][0]["list"][19]["parameters"][0][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(choice.starts_with("\\FS[22]"), "{choice}");
+}
+
+#[tokio::test]
+async fn a_message_turned_off_exports_as_translated() {
+    let opened = opened().await;
+    set_text_fit(opened.project_id.clone(), enabled(), opened.app.state())
+        .await
+        .unwrap();
+    let first = segment_id(&opened, "一つ目の文。").await;
+    set_text_fit_override(
+        opened.project_id.clone(),
+        first,
+        Some(FitOverride {
+            disabled: true,
+            ..FitOverride::default()
+        }),
+        opened.app.state(),
+    )
+    .await
+    .unwrap();
+    let map = zip_json(&export(&opened, None).await, "data/Map001.json");
+    assert_eq!(line(&map, 4), translation("一つ目の文。"));
+    assert_eq!(line(&map, 7), translation("四つ目の文。"));
 }

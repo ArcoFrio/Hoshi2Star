@@ -385,6 +385,7 @@ impl FitCounts {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FitRow {
+    pub file_id: String,
     pub file_name: String,
     pub pointer: String,
     pub description: bool,
@@ -491,6 +492,7 @@ fn scan(
                     .position(Option::is_some)
                     .unwrap_or(0);
                 rows.push(FitRow {
+                    file_id: file.id.clone(),
                     file_name: file.file_name.clone(),
                     pointer: item.pointer.clone(),
                     description: item.description,
