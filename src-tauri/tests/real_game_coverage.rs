@@ -15,7 +15,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use hoshi2star_lib::commands::coverage::{scan_text_coverage, set_text_categories, CategoryChange};
-use hoshi2star_lib::commands::export::export_project;
+use hoshi2star_lib::commands::export::{export_project, preflight_export};
 use hoshi2star_lib::commands::project::open_project;
 use hoshi2star_lib::db;
 use hoshi2star_lib::engines::mv_mz::coverage::CategoryState;
@@ -194,11 +194,11 @@ async fn real_game_scan_enable_translate_export() {
         );
     }
 
-    let first = export_project(project_id.clone(), Some(22), true, app.state())
+    let first = export_project(project_id.clone(), Some(22), true, None, app.state())
         .await
         .expect("export passes QA and the integrity gate");
     let first_entries = zip_entries(&first);
-    let second = export_project(project_id.clone(), Some(22), true, app.state())
+    let second = export_project(project_id.clone(), Some(22), true, None, app.state())
         .await
         .unwrap();
     assert_eq!(
@@ -206,6 +206,40 @@ async fn real_game_scan_enable_translate_export() {
         first_entries,
         "exports must be identical"
     );
+
+    // Optional language switch: only System.json `locale` may differ.
+    if let Some(option) = preflight_export(project_id.clone(), app.state())
+        .await
+        .unwrap()
+        .locale
+    {
+        eprintln!("== locale {} -> {}", option.current, option.target);
+        for line in &option.consequences {
+            eprintln!("  - {line}");
+        }
+        for code in &option.uses {
+            eprintln!("    {} | {}", code.location, code.code);
+        }
+        let switched = export_project(project_id.clone(), Some(22), true, Some(true), app.state())
+            .await
+            .expect("the locale switch passes the integrity gate");
+        let switched_entries = zip_entries(&switched);
+        assert_eq!(
+            switched_entries.keys().collect::<Vec<_>>(),
+            first_entries.keys().collect::<Vec<_>>()
+        );
+        for (name, bytes) in &switched_entries {
+            if name.ends_with("data/System.json") {
+                let mut expected: serde_json::Value =
+                    serde_json::from_slice(&first_entries[name]).unwrap();
+                expected["locale"] = serde_json::Value::String(option.target.clone());
+                let actual: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+                assert_eq!(actual, expected);
+            } else {
+                assert_eq!(Some(bytes), first_entries.get(name), "{name} changed");
+            }
+        }
+    }
 
     let exported_plugins = first_entries
         .get("js/plugins.js")

@@ -639,5 +639,14 @@
     "notCoveredTitle": "Plugin text not covered ({{count}})",
     "notCoveredHint": "These plugin settings contain text, but no verified profile proves they are display-only, so they stay untranslated. A hint is a guess from the plugin code, never a guarantee.",
     "notCoveredHintLabel": "Hint:"
+  },
+  "exportLocale": {
+    "label": "Also switch the game's language setting ({{current}} → {{target}})",
+    "hint": "Optional and off by default. Only System.json `locale` changes; the consequences below come from this game's own code.",
+    "codeLines": "Code lines that read the setting ({{count}})"
+  },
+  "exportIntegrity": {
+    "title": "Export blocked by the integrity check",
+    "description": "No file was written. The check compares every output file with the original and found changes that were not planned:"
   }
 }

@@ -44,6 +44,26 @@ export interface FontScanResult {
   engine: string;
 }
 
+/** A line of engine or plugin code that reads the game's language setting. */
+export interface LocaleUse {
+  location: string;
+  code: string;
+}
+
+/** Optional switch of System.json `locale` to the target language (MV 1.6+ / MZ). */
+export interface LocaleOption {
+  current: string;
+  target: string;
+  consequences: string[];
+  uses: LocaleUse[];
+}
+
+/** Options offered before an export (`preflight_export`). */
+export interface ExportPreflight {
+  /** `null` when the game has no language setting or it already matches. */
+  locale: LocaleOption | null;
+}
+
 export interface ProjectStats {
   fileCount: number;
   totalSegments: number;

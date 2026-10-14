@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use hoshi2star_lib::commands::coverage::{
     scan_text_coverage, set_text_categories, CategoryChange, CoverageView,
 };
-use hoshi2star_lib::commands::export::export_project;
+use hoshi2star_lib::commands::export::{export_project, preflight_export};
 use hoshi2star_lib::commands::project::{
     get_segments, get_source_files, open_project, update_segment,
 };
@@ -217,6 +217,52 @@ async fn blocked_categories_cannot_be_enabled() {
 }
 
 #[tokio::test]
+async fn locale_switch_is_previewed_and_applied_only_on_request() {
+    let opened = opened().await;
+    let option = preflight_export(opened.project_id.clone(), opened.app.state())
+        .await
+        .unwrap()
+        .locale
+        .expect("an MZ game with a language setting");
+    assert_eq!(
+        (option.current.as_str(), option.target.as_str()),
+        ("ja_JP", "en_US")
+    );
+    let locations: Vec<_> = option.uses.iter().map(|u| u.location.as_str()).collect();
+    assert_eq!(locations, vec!["js/rmmz_objects.js:7"]);
+    assert!(option.consequences.iter().any(|c| c.contains("half-width")));
+
+    // Off by default: nothing is translated, so System.json is not exported.
+    let zip = export_project(
+        opened.project_id.clone(),
+        None,
+        true,
+        None,
+        opened.app.state(),
+    )
+    .await
+    .unwrap();
+    let archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+    assert!(archive.index_for_name("data/System.json").is_none());
+
+    // On request: exactly one value changes, even with no translation at all.
+    let zip = export_project(
+        opened.project_id.clone(),
+        None,
+        true,
+        Some(true),
+        opened.app.state(),
+    )
+    .await
+    .unwrap();
+    let mut expected: Value =
+        serde_json::from_slice(&std::fs::read(fixture().join("data/System.json")).unwrap())
+            .unwrap();
+    expected["locale"] = Value::String("en_US".into());
+    assert_eq!(zip_json(&zip, "data/System.json"), expected);
+}
+
+#[tokio::test]
 async fn enabled_categories_translate_export_and_park_round_trip() {
     let opened = opened().await;
     let view = set_text_categories(
@@ -269,6 +315,7 @@ async fn enabled_categories_translate_export_and_park_round_trip() {
         opened.project_id.clone(),
         Some(22),
         true,
+        None,
         opened.app.state(),
     )
     .await
@@ -419,9 +466,15 @@ async fn linked_skill_types_rewrite_every_tag_and_pass_the_gate() {
     )
     .await;
 
-    let zip = export_project(opened.project_id.clone(), None, true, opened.app.state())
-        .await
-        .expect("linked export passes QA and the Keke resolution check");
+    let zip = export_project(
+        opened.project_id.clone(),
+        None,
+        true,
+        None,
+        opened.app.state(),
+    )
+    .await
+    .expect("linked export passes QA and the Keke resolution check");
     let system = zip_json(&zip, "data/System.json");
     assert_eq!(
         system["skillTypes"],
@@ -453,9 +506,15 @@ async fn invalid_or_duplicate_skill_type_names_block_the_export() {
         .await
         .unwrap();
         translate_all(&opened, &[("魔術", magic), ("鞭", whip)]).await;
-        let error = export_project(opened.project_id.clone(), None, true, opened.app.state())
-            .await
-            .unwrap_err();
+        let error = export_project(
+            opened.project_id.clone(),
+            None,
+            true,
+            None,
+            opened.app.state(),
+        )
+        .await
+        .unwrap_err();
         assert!(error.contains("QA"), "{expected_rule}: {error}");
         let report = hoshi2star_lib::core::report::preview_project(
             &opened.app.state::<AppState>().db,

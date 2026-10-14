@@ -215,24 +215,10 @@ pub async fn scan_project(
             }
         }
 
-        let mut plugin_sources = Vec::new();
-        if let (Some(js_dir), Some(text)) = (&js_dir, &plugins_text) {
-            if let Ok(plugins) = PluginsJs::parse(text) {
-                for entry in plugins.entries().iter().filter(|entry| entry.status) {
-                    let mut path = js_dir.join("plugins");
-                    for part in entry.name.split('/') {
-                        path.push(part);
-                    }
-                    path.set_extension("js");
-                    if let Ok(source) = std::fs::read(&path) {
-                        plugin_sources.push((
-                            entry.name.clone(),
-                            String::from_utf8_lossy(&source).into_owned(),
-                        ));
-                    }
-                }
-            }
-        }
+        let plugin_sources = match (&js_dir, &plugins_text) {
+            (Some(js_dir), Some(text)) => enabled_plugin_sources(js_dir, text),
+            _ => Vec::new(),
+        };
 
         let core_sources: Vec<CoreSource> = core_rows
             .into_iter()
@@ -255,6 +241,29 @@ pub async fn scan_project(
     });
     let (report, store) = worker.await.map_err(|error| error.to_string())??;
     Ok(Some((report, store)))
+}
+
+/// `(plugin name, source)` of every enabled plugin of `plugins_text` whose
+/// file exists under `js_dir/plugins` (names may contain `/` subfolders).
+pub(crate) fn enabled_plugin_sources(js_dir: &Path, plugins_text: &str) -> Vec<(String, String)> {
+    let Ok(plugins) = PluginsJs::parse(plugins_text) else {
+        return Vec::new();
+    };
+    let mut sources = Vec::new();
+    for entry in plugins.entries().iter().filter(|entry| entry.status) {
+        let mut path = js_dir.join("plugins");
+        for part in entry.name.split('/') {
+            path.push(part);
+        }
+        path.set_extension("js");
+        if let Ok(source) = std::fs::read(&path) {
+            sources.push((
+                entry.name.clone(),
+                String::from_utf8_lossy(&source).into_owned(),
+            ));
+        }
+    }
+    sources
 }
 
 async fn build_view(

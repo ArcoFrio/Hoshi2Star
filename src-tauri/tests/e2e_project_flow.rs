@@ -488,7 +488,7 @@ async fn mv_open_translate_export_round_trip() {
         .await
         .expect("update_segment");
 
-    let zip_path = export_project(project.id.clone(), None, true, app.state())
+    let zip_path = export_project(project.id.clone(), None, true, None, app.state())
         .await
         .expect("export_project");
 
@@ -562,7 +562,7 @@ async fn mv_export_is_idempotent_after_unzipping_over_the_game() {
         }
     }
     let first = zip_entries(Path::new(
-        &export_project(project.id.clone(), Some(22), true, app.state())
+        &export_project(project.id.clone(), Some(22), true, None, app.state())
             .await
             .expect("first export"),
     ));
@@ -573,7 +573,7 @@ async fn mv_export_is_idempotent_after_unzipping_over_the_game() {
         std::fs::write(game_root.join(name), bytes).unwrap();
     }
     let second = zip_entries(Path::new(
-        &export_project(project.id.clone(), Some(22), true, app.state())
+        &export_project(project.id.clone(), Some(22), true, None, app.state())
             .await
             .expect("export over an unzipped folder"),
     ));
@@ -585,7 +585,7 @@ async fn mv_export_is_idempotent_after_unzipping_over_the_game() {
     // Legacy project: no snapshot yet, game folder already translated.
     std::fs::remove_dir_all(&snapshot).unwrap();
     let third = zip_entries(Path::new(
-        &export_project(project.id.clone(), Some(22), true, app.state())
+        &export_project(project.id.clone(), Some(22), true, None, app.state())
             .await
             .expect("export after reconstructing the snapshot"),
     ));
@@ -634,7 +634,7 @@ async fn mv_export_allows_a_non_critical_width_warning() {
     .expect("save warning-only translation");
     assert_eq!(updated.qa_score, Some(90));
 
-    export_project(project.id, None, true, app.state())
+    export_project(project.id, None, true, None, app.state())
         .await
         .expect("a warning-only project must remain exportable");
 }
@@ -667,7 +667,7 @@ async fn mv_export_blocks_a_missing_placeholder_at_score_75() {
         .expect("save structurally invalid translation");
     assert_eq!(updated.qa_score, Some(75));
 
-    let error = export_project(project.id, None, true, app.state())
+    let error = export_project(project.id, None, true, None, app.state())
         .await
         .expect_err("a missing placeholder must block export");
     assert!(error.contains("Export bloqué"));
@@ -958,7 +958,7 @@ async fn wolf_common_events_open_translate_export_round_trip() {
         .await
         .expect("update_segment B");
 
-    let zip_path = export_project(project.id.clone(), None, true, app.state())
+    let zip_path = export_project(project.id.clone(), None, true, None, app.state())
         .await
         .expect("export_project");
 

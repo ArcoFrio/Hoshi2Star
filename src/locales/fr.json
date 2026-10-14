@@ -639,5 +639,14 @@
     "notCoveredTitle": "Texte de plugin non couvert ({{count}})",
     "notCoveredHint": "Ces paramètres de plugin contiennent du texte, mais aucun profil vérifié ne prouve qu'ils servent seulement à l'affichage : ils restent non traduits. Un indice est une supposition tirée du code du plugin, jamais une garantie.",
     "notCoveredHintLabel": "Indice :"
+  },
+  "exportLocale": {
+    "label": "Changer aussi le réglage de langue du jeu ({{current}} → {{target}})",
+    "hint": "Facultatif et désactivé par défaut. Seul `locale` dans System.json change ; les conséquences ci-dessous viennent du code de ce jeu.",
+    "codeLines": "Lignes de code qui lisent ce réglage ({{count}})"
+  },
+  "exportIntegrity": {
+    "title": "Export bloqué par le contrôle d'intégrité",
+    "description": "Aucun fichier n'a été écrit. Le contrôle compare chaque fichier produit avec l'original et a trouvé des changements non prévus :"
   }
 }

@@ -266,7 +266,7 @@ async fn run_target(target_language: &str, character_target: &str, item_target: 
     let (qa, _) = report::preview_project(pool, &project_id).await.unwrap();
     assert_eq!(qa.critical_count, 0);
     assert!(qa.terminology_issues.is_empty());
-    let zip_path = export_project(project_id.clone(), None, false, app.state())
+    let zip_path = export_project(project_id.clone(), None, false, None, app.state())
         .await
         .unwrap();
     assert_valid_export(Path::new(&zip_path), character_target);

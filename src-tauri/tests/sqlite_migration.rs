@@ -73,7 +73,7 @@ async fn export_succeeds_after_repairing_translation_secs() {
         .build(mock_context(noop_assets()))
         .expect("mock app build");
 
-    let zip_path = export_project("p1".to_string(), None, true, app.state())
+    let zip_path = export_project("p1".to_string(), None, true, None, app.state())
         .await
         .expect("export should succeed after schema repair");
 

@@ -8,14 +8,16 @@ use serde::Serialize;
 use std::io::Write as _;
 
 use crate::{
+    commands::coverage::enabled_plugin_sources,
     core::{originals, report, tm},
     domain::types::SourceFile,
     engines::{
         detector::guess_wolf_version_from_structure,
-        filter::{classify_file_type, FileClass},
+        filter::{classify_file_type, is_map_file, FileClass},
         mv_mz::{
-            coverage::plugins::context_is_fill_in,
+            coverage::plugins::{context_is_fill_in, for_each_command, PLUGINS_FILE_NAME},
             injector, integrity, keke,
+            locale::{self, LocaleUse},
             originals::SnapshotStore,
             plugins_js::{parse_plugin_key, PluginsJs},
         },
@@ -259,16 +261,20 @@ pub async fn strip_font_prefixes(
 ///  - `"vx_*"`   → `inject_and_serialize` (Marshal round-trip)
 ///  - otherwise  → `inject_to_bytes` (JSON round-trip)
 ///
+/// `set_locale` (MV 1.6+ / MZ, off by default) also switches System.json
+/// `locale` to the target language; `preflight_export` lists its consequences.
+///
 /// Returns the absolute path of the written zip file.
 #[tauri::command]
 pub async fn export_project(
     project_id: String,
     font_size: Option<u32>,
     replace_existing: bool,
+    set_locale: Option<bool>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    let (game_path, engine): (String, String) =
-        sqlx::query_as("SELECT game_path, engine FROM projects WHERE id = ?")
+    let (game_path, engine, target_language): (String, String, String) =
+        sqlx::query_as("SELECT game_path, engine, target_language FROM projects WHERE id = ?")
             .bind(&project_id)
             .fetch_one(&state.db)
             .await
@@ -307,6 +313,24 @@ pub async fn export_project(
     };
     let mut integrity_issues = Vec::new();
 
+    // Optional language switch, planned and verified like any other edit.
+    let locale_edit = match (&snapshot, set_locale) {
+        (Some(store), Some(true)) => {
+            let target = locale::target_locale(&target_language);
+            match snapshot_locale(store, &files, &game_path)? {
+                Some(current) if current != target => Some(target),
+                Some(_) => None,
+                None => {
+                    return Err(
+                        "This game has no language setting (System.json `locale`) to change."
+                            .to_string(),
+                    )
+                }
+            }
+        }
+        _ => None,
+    };
+
     let has_wolf = files
         .iter()
         .any(|f| matches!(classify_file_type(&f.file_type), FileClass::Wolf));
@@ -341,7 +365,10 @@ pub async fn export_project(
             .map_err(|e| e.to_string())?;
 
             let note_file = engine == "mv_mz" && NOTE_FILE_TYPES.contains(&file.file_type.as_str());
-            if rows.is_empty() && !(note_file && !renames.is_empty()) {
+            let locale_here = locale_edit
+                .as_deref()
+                .filter(|_| file.file_name == "System.json");
+            if rows.is_empty() && !(note_file && !renames.is_empty()) && locale_here.is_none() {
                 continue;
             }
             let (label_rows, rows): (Vec<_>, Vec<_>) = rows
@@ -406,6 +433,9 @@ pub async fn export_project(
                             file.file_name
                         ));
                     }
+                    if let Some(target) = locale_here {
+                        translations.push(("/locale".to_string(), target.to_string()));
+                    }
                     if translations.is_empty() {
                         continue;
                     }
@@ -443,6 +473,165 @@ pub async fn export_project(
     let zip_path = game_dir.join("hoshi2star.zip");
     write_zip(&zip_path, entries)?;
     Ok(zip_path.to_string_lossy().into_owned())
+}
+
+// ---------------------------------------------------------------------------
+// Export preflight (optional language switch)
+// ---------------------------------------------------------------------------
+
+/// Switching the game's language setting to the project target language.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocaleOption {
+    pub current: String,
+    pub target: String,
+    pub consequences: Vec<String>,
+    /// Engine and plugin code lines that read the setting.
+    pub uses: Vec<LocaleUse>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportPreflight {
+    /// `None` when the game has no language setting (MV < 1.6, other engines)
+    /// or it already matches the target language.
+    pub locale: Option<LocaleOption>,
+}
+
+/// Options offered before an export, with their consequences for this game.
+#[tauri::command]
+pub async fn preflight_export(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<ExportPreflight, String> {
+    let (game_path, engine, target_language): (String, String, String) =
+        sqlx::query_as("SELECT game_path, engine, target_language FROM projects WHERE id = ?")
+            .bind(&project_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
+    if engine != "mv_mz" {
+        return Ok(ExportPreflight { locale: None });
+    }
+    let store = originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &project_id).await?;
+    let files = sqlx::query_as::<_, SourceFile>(
+        "SELECT id, project_id, file_name, file_path, file_type, translation_secs \
+         FROM source_files WHERE project_id = ?",
+    )
+    .bind(&project_id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let target = locale::target_locale(&target_language);
+    let locale =
+        tokio::task::spawn_blocking(move || locale_option(&store, &files, &game_path, &target))
+            .await
+            .map_err(|e| e.to_string())??;
+    Ok(ExportPreflight { locale })
+}
+
+/// System.json `locale` in the pristine snapshot (`None`: no such setting).
+fn snapshot_locale(
+    store: &SnapshotStore,
+    files: &[SourceFile],
+    game_path: &str,
+) -> Result<Option<String>, String> {
+    let Some(system) = files.iter().find(|file| file.file_name == "System.json") else {
+        return Ok(None);
+    };
+    let rel = originals::game_relative_path(game_path, &system.file_path, &system.file_name);
+    let bytes = store.read(&rel).map_err(|e| e.to_string())?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("parse {rel}: {e}"))?;
+    Ok(json
+        .get("locale")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string))
+}
+
+fn locale_option(
+    store: &SnapshotStore,
+    files: &[SourceFile],
+    game_path: &str,
+    target: &str,
+) -> Result<Option<LocaleOption>, String> {
+    let Some(current) = snapshot_locale(store, files, game_path)? else {
+        return Ok(None);
+    };
+    if current == target {
+        return Ok(None);
+    }
+
+    // Code that reads the setting: the engine core (`js/rmmz_*.js` or
+    // `js/rpg_*.js`) and every enabled plugin. `js/` sits next to `data/`.
+    let mut sources = Vec::new();
+    let js_dir = files
+        .iter()
+        .find(|file| file.file_name == "System.json")
+        .and_then(|system| {
+            Path::new(&system.file_path)
+                .parent()?
+                .parent()
+                .map(|game| game.join("js"))
+        });
+    if let Some(js_dir) = &js_dir {
+        let mut core: Vec<PathBuf> = std::fs::read_dir(js_dir)
+            .map(|dir| {
+                dir.filter_map(|entry| entry.ok().map(|e| e.path()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        core.sort();
+        for path in core {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if (name.starts_with("rmmz_") || name.starts_with("rpg_")) && name.ends_with(".js") {
+                if let Ok(text) = std::fs::read(&path) {
+                    sources.push((
+                        format!("js/{name}"),
+                        String::from_utf8_lossy(&text).into_owned(),
+                    ));
+                }
+            }
+        }
+        // Export never changes which plugins are on, so the game folder's
+        // plugins.js lists the same enabled plugins as the original.
+        if let Ok(plugins) = std::fs::read(js_dir.join(PLUGINS_FILE_NAME)) {
+            let plugins = String::from_utf8_lossy(&plugins);
+            for (name, text) in enabled_plugin_sources(js_dir, &plugins) {
+                sources.push((format!("js/plugins/{name}.js"), text));
+            }
+        }
+    }
+    let uses = locale::locale_uses(&sources);
+
+    // Name-input events decide whether the keyboard change is visible.
+    let mut data_files = Vec::new();
+    for file in files.iter().filter(|file| {
+        is_map_file(&file.file_name, ".json")
+            || file.file_name == "CommonEvents.json"
+            || file.file_name == "Troops.json"
+    }) {
+        let rel = originals::game_relative_path(game_path, &file.file_path, &file.file_name);
+        let bytes = store.read(&rel).map_err(|e| e.to_string())?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("parse {rel}: {e}"))?;
+        data_files.push((file.file_name.clone(), rel, json));
+    }
+    let mut name_inputs = 0;
+    for_each_command(&data_files, &mut |_, _, _, _, command| {
+        if command.get("code").and_then(serde_json::Value::as_i64) == Some(303) {
+            name_inputs += 1;
+        }
+    });
+
+    Ok(Some(LocaleOption {
+        consequences: locale::consequences(&current, target, &uses, name_inputs),
+        current,
+        target: target.to_string(),
+        uses,
+    }))
 }
 
 /// MV/MZ database files (`source_files.file_type`) whose entries carry notes.
