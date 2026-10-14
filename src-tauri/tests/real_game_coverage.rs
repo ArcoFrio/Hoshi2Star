@@ -501,3 +501,235 @@ async fn real_game_scan_enable_translate_export() {
     }
     eprintln!("== archive entries: {}", first_entries.len());
 }
+
+/// String leaves that differ between two JSON values: `(pointer, a, b)`.
+fn differing_strings(
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+    pointer: &str,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for (key, value) in x {
+                if let Some(other) = y.get(key) {
+                    differing_strings(value, other, &format!("{pointer}/{key}"), out);
+                }
+            }
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            for (index, (value, other)) in x.iter().zip(y).enumerate() {
+                differing_strings(value, other, &format!("{pointer}/{index}"), out);
+            }
+        }
+        (Value::String(x), Value::String(y)) if x != y => out.push(pointer.to_string()),
+        _ => {}
+    }
+}
+
+/// Text fitting at export on real data: the original game (`H2S_MZ_GAME_DIR`,
+/// `data/` + `js/`), the translations of a project database copy
+/// (`H2S_FIT_DB`) and the game font (`H2S_FONT_FILE`). Exports with fitting
+/// on, checks the gate, idempotency and that only dialogue/description
+/// values differ from an unfitted export; writes the exported messages to
+/// `H2S_FIT_EXPORT_OUT` for the engine harness.
+#[tokio::test]
+#[ignore = "requires a private game: set H2S_MZ_GAME_DIR, H2S_FIT_DB, H2S_FONT_FILE, H2S_FIT_EXPORT_OUT"]
+async fn real_game_fit_export() {
+    use hoshi2star_lib::commands::text_fit::{scan_text_fit, set_text_fit};
+    use hoshi2star_lib::core::text_fit::TextFitSettings;
+    use hoshi2star_lib::engines::mv_mz::layout::message::messages_in;
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    let vars = [
+        "H2S_MZ_GAME_DIR",
+        "H2S_FIT_DB",
+        "H2S_FONT_FILE",
+        "H2S_FIT_EXPORT_OUT",
+    ]
+    .map(std::env::var);
+    let [Ok(source_game), Ok(db_path), Ok(font_file), Ok(out)] = vars else {
+        eprintln!(
+            "H2S_MZ_GAME_DIR / H2S_FIT_DB / H2S_FONT_FILE / H2S_FIT_EXPORT_OUT not set; skipping"
+        );
+        return;
+    };
+    let source_game = PathBuf::from(source_game);
+    let temporary = tempfile::tempdir().unwrap();
+    let game = temporary.path().join("game");
+    copy_tree(&source_game.join("data"), &game.join("data"));
+    copy_tree(&source_game.join("js"), &game.join("js"));
+    let system: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(game.join("data/System.json")).unwrap()).unwrap();
+    let font_name = system["advanced"]["mainFontFilename"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    std::fs::create_dir_all(game.join("fonts")).unwrap();
+    std::fs::copy(&font_file, game.join("fonts").join(&font_name)).unwrap();
+
+    let pool = db::pool::init(temporary.path().join("pilot.db").to_str().unwrap())
+        .await
+        .unwrap();
+    let app = mock_builder()
+        .manage(AppState::new(pool, temporary.path().join("app-data")).unwrap())
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let project_id = open_project(
+        game.to_string_lossy().into_owned(),
+        Some("ja".into()),
+        Some("en".into()),
+        app.state(),
+    )
+    .await
+    .unwrap()
+    .project
+    .id;
+
+    // The real translations, matched by file and pointer.
+    let options =
+        sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite://{db_path}?mode=ro"))
+            .unwrap();
+    let copy = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_with(options)
+        .await
+        .unwrap();
+    let real: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT f.file_name, s.json_key, s.target_text FROM segments s \
+         JOIN source_files f ON f.id = s.source_file_id WHERE s.target_text != ''",
+    )
+    .fetch_all(&copy)
+    .await
+    .unwrap();
+    let real: HashMap<(String, String), String> =
+        real.into_iter().map(|(f, k, t)| ((f, k), t)).collect();
+    let db = &app.state::<AppState>().db;
+    let ours: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT s.id, f.file_name, s.json_key FROM segments s \
+         JOIN source_files f ON f.id = s.source_file_id WHERE f.project_id = ?",
+    )
+    .bind(&project_id)
+    .fetch_all(db)
+    .await
+    .unwrap();
+    let mut matched = 0;
+    for (id, file, key) in &ours {
+        if let Some(target) = real.get(&(file.clone(), key.clone())) {
+            sqlx::query("UPDATE segments SET target_text = ?, status = 'translated' WHERE id = ?")
+                .bind(target)
+                .bind(id)
+                .execute(db)
+                .await
+                .unwrap();
+            matched += 1;
+        }
+    }
+    eprintln!("== translations matched: {matched} of {}", ours.len());
+    let (summary, _) = hoshi2star_lib::core::report::preview_project(db, &project_id)
+        .await
+        .unwrap();
+    eprintln!(
+        "== QA with fresh segment kinds: {} critical; by type {:?}",
+        summary.critical_count, summary.errors_by_type
+    );
+    // Mirror the source project: created before segment kinds existed, its
+    // core segments are `unknown` without context.
+    sqlx::query(
+        "UPDATE segments SET segment_kind = 'unknown', context_json = NULL \
+         WHERE text_category IS NULL AND source_file_id IN \
+           (SELECT id FROM source_files WHERE project_id = ?)",
+    )
+    .bind(&project_id)
+    .execute(db)
+    .await
+    .unwrap();
+
+    let plain = match export_project(project_id.clone(), None, true, None, app.state()).await {
+        Ok(path) => zip_entries(&path),
+        Err(error) => {
+            eprintln!("== export blocked before fitting: {error}");
+            return;
+        }
+    };
+    set_text_fit(
+        project_id.clone(),
+        TextFitSettings {
+            enabled_dialogue: true,
+            enabled_descriptions: true,
+            ..TextFitSettings::default()
+        },
+        app.state(),
+    )
+    .await
+    .unwrap();
+    let scan = scan_text_fit(project_id.clone(), None, app.state())
+        .await
+        .unwrap();
+    eprintln!("== dialogue {:?}", scan.dialogue);
+    eprintln!("== descriptions {:?}", scan.descriptions);
+    eprintln!("== missing glyphs {:?}", scan.missing_chars);
+    for row in scan.rows.iter().take(12) {
+        eprintln!(
+            "   {} {} {:?} {:?}",
+            row.file_name, row.pointer, row.outcome, row.sample
+        );
+    }
+
+    let first = export_project(project_id.clone(), None, true, None, app.state())
+        .await
+        .expect("the fitted export passes QA and the integrity gate");
+    let fitted = zip_entries(&first);
+    let second = export_project(project_id.clone(), None, true, None, app.state())
+        .await
+        .unwrap();
+    assert_eq!(
+        zip_entries(&second),
+        fitted,
+        "fitted exports must be identical"
+    );
+
+    // Only dialogue lines and descriptions differ from the unfitted export.
+    let line = regex::Regex::new(r"/list/\d+/parameters/0$").unwrap();
+    let description = regex::Regex::new(r"^/\d+/(description|profile)$").unwrap();
+    let mut changed = 0;
+    for (name, bytes) in &fitted {
+        if !name.ends_with(".json") {
+            assert_eq!(Some(bytes), plain.get(name), "{name}");
+            continue;
+        }
+        let Some(before) = plain.get(name) else {
+            continue;
+        };
+        let a: serde_json::Value = serde_json::from_slice(before).unwrap();
+        let b: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        let mut pointers = Vec::new();
+        differing_strings(&a, &b, "", &mut pointers);
+        for pointer in &pointers {
+            assert!(
+                line.is_match(pointer) || description.is_match(pointer),
+                "{name} {pointer} changed"
+            );
+        }
+        changed += pointers.len();
+    }
+    eprintln!("== values laid out differently: {changed}");
+
+    // Exported messages for the engine harness.
+    let mut records = Vec::new();
+    for (name, bytes) in &fitted {
+        let file = name.rsplit('/').next().unwrap_or(name);
+        let json: serde_json::Value =
+            serde_json::from_slice(bytes).unwrap_or(serde_json::Value::Null);
+        for message in messages_in(file, &json) {
+            records.push(serde_json::json!({
+                "file": file,
+                "pointer": message.pointer(),
+                "face": message.face,
+                "output": message.lines.iter().map(|(_, text)| text.clone()).collect::<Vec<_>>(),
+            }));
+        }
+    }
+    std::fs::write(out, serde_json::to_vec_pretty(&records).unwrap()).unwrap();
+}
