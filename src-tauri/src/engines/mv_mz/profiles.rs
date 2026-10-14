@@ -117,6 +117,10 @@ pub struct PluginMeta {
     /// `true`/`false`, numbers and JSON text into other types.
     #[serde(default)]
     pub coerces_values: bool,
+    /// Note-tag grammars of this plugin that Hoshi2Star implements
+    /// (`keke_command`).
+    #[serde(default)]
+    pub note_tag_families: Vec<String>,
 }
 
 /// A parameter path whose value is drawn on screen.
@@ -244,6 +248,11 @@ impl PluginProfile {
     fn validate(&self) -> Result<(), String> {
         if self.plugin.verified_versions.is_empty() && self.plugin.verified_sha256.is_empty() {
             return Err("a profile must pin at least one version or sha256".into());
+        }
+        for family in &self.plugin.note_tag_families {
+            if family != crate::engines::mv_mz::keke::FAMILY {
+                return Err(format!("unknown note-tag family {family}"));
+            }
         }
         for hash in &self.plugin.verified_sha256 {
             if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {

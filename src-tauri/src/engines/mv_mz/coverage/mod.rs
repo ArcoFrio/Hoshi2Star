@@ -14,6 +14,7 @@
 //! The scan is pure: callers pass the pristine game files and receive the
 //! report. Nothing here touches the database or the game folder.
 
+pub mod keke;
 pub mod plugins;
 pub mod sites;
 
@@ -67,6 +68,13 @@ pub enum Constraint {
     /// The plugin converts values (`true`/`false`, numbers, JSON) before use:
     /// the translation must stay plain text.
     PlainTextValue,
+    /// Skill-type name looked up inside Keke command tags: no whitespace,
+    /// separators or ASCII digits, unique.
+    KekeSkillTypeName,
+    /// Field inside a Keke command tag: no `,` or `>`.
+    KekeTagField,
+    /// Keke removes all whitespace from tag contents (cosmetic).
+    KekeNoSpaces,
 }
 
 impl Constraint {
@@ -75,6 +83,9 @@ impl Constraint {
             Self::KeepFormatSpecifiers => "keep_format_specifiers",
             Self::NoEscapeCodes => "no_escape_codes",
             Self::PlainTextValue => "plain_text_value",
+            Self::KekeSkillTypeName => "keke_skill_type",
+            Self::KekeTagField => "keke_tag_field",
+            Self::KekeNoSpaces => "keke_no_spaces",
         }
     }
 
@@ -83,6 +94,9 @@ impl Constraint {
             "keep_format_specifiers" => Some(Self::KeepFormatSpecifiers),
             "no_escape_codes" => Some(Self::NoEscapeCodes),
             "plain_text_value" => Some(Self::PlainTextValue),
+            "keke_skill_type" => Some(Self::KekeSkillTypeName),
+            "keke_tag_field" => Some(Self::KekeTagField),
+            "keke_no_spaces" => Some(Self::KekeNoSpaces),
             _ => None,
         }
     }
@@ -237,11 +251,27 @@ pub fn scan(input: &CoverageInput<'_>) -> CoverageReport {
         _ => true,
     });
 
+    // Keke command tags: labels are display text and skill-type names are
+    // rewritten consistently, so neither counts as a generic reference.
+    let keke_owner = plugin_outcome
+        .note_tag_owners
+        .iter()
+        .find(|(family, _)| family == crate::engines::mv_mz::keke::FAMILY)
+        .map(|(_, owner)| owner.clone());
+    let keke_references = match &keke_owner {
+        Some(_) => keke::mask_note_sites(&mut sites),
+        None => Vec::new(),
+    };
+
     let mut categories = system_type_categories(input.data_files);
     categories.extend(map_display_name_category(input.data_files));
     categories.extend(plugin_outcome.categories);
+    if let Some(owner) = &keke_owner {
+        categories.extend(keke::labels_category(input.data_files, owner));
+    }
     for category in &mut categories {
         classify(category, &sites);
+        keke::link_skill_types(category, &keke_references);
     }
     categories.extend(plugin_outcome.blocked);
     categories.retain(|category| !category.candidates.is_empty());

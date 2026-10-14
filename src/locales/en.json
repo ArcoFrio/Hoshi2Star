@@ -319,7 +319,11 @@
       "constraint": {
         "plain_text_value": "This plugin converts values: the translation must not be only a number, true/false or JSON",
         "no_escape_codes": "Drawn as plain text here: escape codes would be shown literally",
-        "other": "Breaks a display rule: {{rule}}"
+        "other": "Breaks a display rule: {{rule}}",
+        "keke_skill_type": "Looked up in battle-command tags: one word, no spaces, `,` `/` `>` `:` or digits",
+        "keke_skill_type_unique": "Another skill type has the same translation: battle commands would point to the wrong type",
+        "keke_tag_field": "Inside a note tag: `,` or `>` would break the battle command",
+        "keke_no_spaces": "The plugin removes spaces here (\"Whip Attack\" shows as \"WhipAttack\")"
       }
     },
     "severity": {
@@ -573,7 +577,10 @@
     "constraint": {
       "keep_format_specifiers": "Keep every %1, %2… placeholder",
       "no_escape_codes": "Plain text only: codes like \\C[n] or \\FS[n] would be shown literally",
-      "plain_text_value": "Must stay plain text: the plugin turns true/false, numbers and JSON into other types"
+      "plain_text_value": "Must stay plain text: the plugin turns true/false, numbers and JSON into other types",
+      "keke_skill_type": "One word: no spaces, `,` `/` `>` `:` or ASCII digits, and different from every other skill type",
+      "keke_tag_field": "No `,` or `>` (they would break the note tag)",
+      "keke_no_spaces": "Spaces are removed by the plugin (\"Whip Attack\" → \"WhipAttack\")"
     },
     "category": {
       "system": {
@@ -602,6 +609,14 @@
         "display_name": {
           "title": "Map display names",
           "visibleIn": "The map name popup shown when entering a map"
+        }
+      },
+      "notetag": {
+        "keke_command": {
+          "labels": {
+            "title": "Battle command labels (Keke note tags)",
+            "visibleIn": "Battle actor commands"
+          }
         }
       }
     },

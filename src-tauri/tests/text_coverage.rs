@@ -18,6 +18,7 @@ use hoshi2star_lib::commands::project::{
 };
 use hoshi2star_lib::db;
 use hoshi2star_lib::engines::mv_mz::coverage::CategoryState;
+use hoshi2star_lib::engines::mv_mz::profiles::ProfileSet;
 use hoshi2star_lib::state::AppState;
 use serde_json::Value;
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -47,13 +48,36 @@ struct Opened {
 }
 
 async fn opened() -> Opened {
+    opened_with(None).await
+}
+
+/// Profile for the fixture's synthetic Keke stand-in (pinned to its test
+/// version header), enabling the command-tag grammar.
+const KEKE_TEST_PROFILE: &str = r#"
+    [plugin]
+    name = "keke/Keke_VariableActorCommand"
+    title = "Variable actor commands (test stand-in)"
+    verified_versions = ["h2s-test-1"]
+    reference = "synthetic"
+    note_tag_families = ["keke_command"]
+
+    [[display]]
+    path = "用語・自動戦闘"
+    visible_in = "Battle auto-battle command"
+"#;
+
+async fn opened_with(profiles: Option<ProfileSet>) -> Opened {
     let temporary = tempfile::tempdir().unwrap();
     let game = temporary.path().join("game");
     copy_tree(&fixture(), &game);
     let db_path = temporary.path().join("h2s.db");
     let pool = db::pool::init(db_path.to_str().unwrap()).await.unwrap();
+    let mut state = AppState::new(pool, temporary.path().join("app-data")).unwrap();
+    if let Some(profiles) = profiles {
+        state.plugin_profiles = std::sync::Arc::new(profiles);
+    }
     let app = mock_builder()
-        .manage(AppState::new(pool, temporary.path().join("app-data")).unwrap())
+        .manage(state)
         .build(mock_context(noop_assets()))
         .unwrap();
     let project_id = open_project(
@@ -307,4 +331,143 @@ async fn enabled_categories_translate_export_and_park_round_trip() {
     .unwrap();
     assert_eq!(restored.target_text, "Starting Village");
     assert_eq!(restored.text_category.as_deref(), Some("map.display_name"));
+}
+
+async fn opened_with_keke() -> Opened {
+    opened_with(Some(
+        ProfileSet::parse_all(&[("keke.toml", KEKE_TEST_PROFILE)]).unwrap(),
+    ))
+    .await
+}
+
+/// Translate every segment: `targets` for known sources, a short placeholder
+/// otherwise (same source → same target, so QA consistency holds).
+async fn translate_all(opened: &Opened, targets: &[(&str, &str)]) {
+    for (id, _, source, _) in segments_by_file(opened).await.values().flatten() {
+        let target = targets
+            .iter()
+            .find(|(from, _)| from == source)
+            .map(|(_, to)| to.to_string())
+            .unwrap_or_else(|| match source.as_str() {
+                "%1は%2のダメージを受けた！" => "%1 took %2 damage!".to_string(),
+                other => format!("EN[{}]", other.chars().count()),
+            });
+        update_segment(id.clone(), target, opened.app.state())
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn keke_tags_make_skill_types_linked_and_labels_translatable() {
+    let opened = opened_with_keke().await;
+    let view = scan_text_coverage(opened.project_id.clone(), opened.app.state())
+        .await
+        .unwrap();
+
+    // The only references to skill-type names are command-tag lookups.
+    assert_eq!(state_of(&view, "system.skill_types"), CategoryState::Linked);
+    let skills = view
+        .categories
+        .iter()
+        .find(|c| c.key == "system.skill_types")
+        .unwrap();
+    assert_eq!(skills.references[0].location, "Weapons.json /1/note");
+    assert!(skills.consequences.iter().any(|c| c.contains("rewrites")));
+    let labels = view
+        .categories
+        .iter()
+        .find(|c| c.key == "notetag.keke_command.labels")
+        .expect("label category");
+    assert_eq!(labels.samples, vec!["鞭攻撃"]);
+    assert_eq!(
+        state_of(&view, "plugin.keke/Keke_VariableActorCommand"),
+        CategoryState::Verified
+    );
+
+    // Linked categories need explicit acceptance.
+    let error = set_text_categories(
+        opened.project_id.clone(),
+        vec![change("system.skill_types", true)],
+        opened.app.state(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("consequences"), "{error}");
+}
+
+#[tokio::test]
+async fn linked_skill_types_rewrite_every_tag_and_pass_the_gate() {
+    let opened = opened_with_keke().await;
+    set_text_categories(
+        opened.project_id.clone(),
+        vec![
+            CategoryChange {
+                category_key: "system.skill_types".into(),
+                enabled: true,
+                accept_consequences: true,
+            },
+            change("notetag.keke_command.labels", true),
+        ],
+        opened.app.state(),
+    )
+    .await
+    .unwrap();
+    translate_all(
+        &opened,
+        &[("魔術", "Magic"), ("鞭", "Whip"), ("鞭攻撃", "WhipAttack")],
+    )
+    .await;
+
+    let zip = export_project(opened.project_id.clone(), None, true, opened.app.state())
+        .await
+        .expect("linked export passes QA and the Keke resolution check");
+    let system = zip_json(&zip, "data/System.json");
+    assert_eq!(
+        system["skillTypes"],
+        serde_json::json!(["", "Magic", "Whip"])
+    );
+    let weapons = zip_json(&zip, "data/Weapons.json");
+    assert_eq!(
+        weapons[1]["note"],
+        "<コマンド:スキル/Whip,48,WhipAttack,76>"
+    );
+}
+
+#[tokio::test]
+async fn invalid_or_duplicate_skill_type_names_block_the_export() {
+    for (magic, whip, expected_rule) in [
+        ("Dark Arts", "Whip", "keke_skill_type"),
+        ("Whip", "Whip", "keke_skill_type_unique"),
+    ] {
+        let opened = opened_with_keke().await;
+        set_text_categories(
+            opened.project_id.clone(),
+            vec![CategoryChange {
+                category_key: "system.skill_types".into(),
+                enabled: true,
+                accept_consequences: true,
+            }],
+            opened.app.state(),
+        )
+        .await
+        .unwrap();
+        translate_all(&opened, &[("魔術", magic), ("鞭", whip)]).await;
+        let error = export_project(opened.project_id.clone(), None, true, opened.app.state())
+            .await
+            .unwrap_err();
+        assert!(error.contains("QA"), "{expected_rule}: {error}");
+        let report = hoshi2star_lib::core::report::preview_project(
+            &opened.app.state::<AppState>().db,
+            &opened.project_id,
+        )
+        .await
+        .unwrap()
+        .0;
+        assert!(
+            report.errors_by_type.contains_key("constraint_violation"),
+            "{expected_rule}: {:?}",
+            report.errors_by_type
+        );
+    }
 }

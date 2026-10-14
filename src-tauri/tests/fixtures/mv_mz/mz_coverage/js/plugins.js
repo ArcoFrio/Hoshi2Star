@@ -3,5 +3,6 @@
 var $plugins =
 [
 {"name":"Sample/MemoPlugin","status":true,"description":"Pictures","parameters":{"PictureList":"[\"{\\\"Name\\\":\\\"炎\\\",\\\"File\\\":\\\"fire\\\"}\"]","Command":"図鑑"}},
+{"name":"keke/Keke_VariableActorCommand","status":true,"description":"Synthetic stand-in","parameters":{"用語・自動戦闘":"オート"}},
 {"name":"DisabledPlugin","status":false,"description":"","parameters":{"Label":"物理"}}
 ];

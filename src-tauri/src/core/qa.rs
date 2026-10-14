@@ -512,10 +512,21 @@ fn shares_word_sequence(left: &str, right: &str, minimum_words: usize) -> bool {
 /// Constraint names written by MV/MZ text categories in `context_json`.
 const CONSTRAINT_PLAIN_TEXT: &str = "plain_text_value";
 const CONSTRAINT_NO_ESCAPES: &str = "no_escape_codes";
+const CONSTRAINT_KEKE_SKILL_TYPE: &str = "keke_skill_type";
+/// Report-level: two skill types translated to the same name.
+pub const CONSTRAINT_KEKE_SKILL_TYPE_UNIQUE: &str = "keke_skill_type_unique";
+const CONSTRAINT_KEKE_TAG_FIELD: &str = "keke_tag_field";
+const CONSTRAINT_KEKE_NO_SPACES: &str = "keke_no_spaces";
 
 /// Rules whose violation breaks the game (not merely its looks).
 fn is_critical_constraint(rule: &str) -> bool {
-    rule == CONSTRAINT_PLAIN_TEXT
+    matches!(
+        rule,
+        CONSTRAINT_PLAIN_TEXT
+            | CONSTRAINT_KEKE_SKILL_TYPE
+            | CONSTRAINT_KEKE_SKILL_TYPE_UNIQUE
+            | CONSTRAINT_KEKE_TAG_FIELD
+    )
 }
 
 static RE_ESCAPE_CODE: LazyLock<Regex> = LazyLock::new(|| {
@@ -543,6 +554,13 @@ fn check_constraints(source: &str, target: &str, context_json: Option<&str>) -> 
             CONSTRAINT_NO_ESCAPES => {
                 RE_ESCAPE_CODE.is_match(target) && !RE_ESCAPE_CODE.is_match(source)
             }
+            CONSTRAINT_KEKE_SKILL_TYPE => {
+                crate::engines::mv_mz::keke::invalid_skill_type_name(target).is_some()
+            }
+            CONSTRAINT_KEKE_TAG_FIELD => target.contains([',', '>']),
+            CONSTRAINT_KEKE_NO_SPACES => target
+                .chars()
+                .any(crate::engines::mv_mz::keke::is_js_whitespace),
             _ => false,
         };
         if violated {
@@ -717,6 +735,21 @@ impl QaError {
                 CONSTRAINT_NO_ESCAPES => {
                     "Drawn as plain text here: escape codes would be shown literally".to_string()
                 }
+                CONSTRAINT_KEKE_SKILL_TYPE => "Looked up in battle-command tags: one word, no \
+                     spaces, `,` `/` `>` `:` or digits"
+                    .to_string(),
+                CONSTRAINT_KEKE_SKILL_TYPE_UNIQUE => {
+                    "Another skill type has the same translation: battle commands would \
+                     point to the wrong type"
+                        .to_string()
+                }
+                CONSTRAINT_KEKE_TAG_FIELD => {
+                    "Inside a note tag: `,` or `>` would break the battle command".to_string()
+                }
+                CONSTRAINT_KEKE_NO_SPACES => {
+                    "The plugin removes spaces here (\"Whip Attack\" shows as \"WhipAttack\")"
+                        .to_string()
+                }
                 other => format!("Breaks display rule: {other}"),
             },
             QaError::TerminologyMismatch {
@@ -772,6 +805,20 @@ impl QaError {
                     .to_string(),
                 CONSTRAINT_NO_ESCAPES => "Affiché en texte brut ici : les codes d'échappement \
                      apparaîtraient tels quels"
+                    .to_string(),
+                CONSTRAINT_KEKE_SKILL_TYPE => {
+                    "Recherché dans les balises de commandes de combat : \
+                     un seul mot, sans espaces, `,` `/` `>` `:` ni chiffres"
+                        .to_string()
+                }
+                CONSTRAINT_KEKE_SKILL_TYPE_UNIQUE => "Un autre type de compétence a la même \
+                     traduction : les commandes de combat pointeraient vers le mauvais type"
+                    .to_string(),
+                CONSTRAINT_KEKE_TAG_FIELD => "Dans une balise de note : `,` ou `>` casserait la \
+                     commande de combat"
+                    .to_string(),
+                CONSTRAINT_KEKE_NO_SPACES => "Le plugin supprime les espaces ici (« Whip Attack » \
+                     s'affiche « WhipAttack »)"
                     .to_string(),
                 other => format!("Enfreint une règle d'affichage : {other}"),
             },

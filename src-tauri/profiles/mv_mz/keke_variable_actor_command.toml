@@ -9,7 +9,10 @@
 name = "keke/Keke_VariableActorCommand"
 title = "Variable actor commands (Keke_VariableActorCommand)"
 verified_sha256 = ["d460097ba00d5061d4b78e68482c0a9729aa52ddb612911f240a5d173b65feda"]
-reference = "Keke_VariableActorCommand: 用語・自動戦闘 → addCommand; アイコン配置 / キャンセルボタン自動移動 compared against literal option values."
+reference = "Keke_VariableActorCommand: 用語・自動戦闘 → addCommand; アイコン配置 / キャンセルボタン自動移動 compared against literal option values; <コマンド|cmd|command:TYPE,order,label,icon,help> note tags (makeCommandListFree/totalAllMetaArray/metaAll)."
+# Command tags: label = display; TYPE `スキル/NAME` looks NAME up in
+# $dataSystem.skillTypes (implemented in engines/mv_mz/keke.rs).
+note_tag_families = ["keke_command"]
 
 [[display]]
 path = "用語・自動戦闘"

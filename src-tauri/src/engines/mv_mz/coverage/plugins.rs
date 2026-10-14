@@ -47,6 +47,9 @@ pub struct PluginOutcome {
     pub blocked: Vec<TextCategory>,
     pub not_covered: Vec<NotCovered>,
     pub excluded_sites: SiteExclusions,
+    /// `(note-tag family, plugin)` of verified profiles whose note-tag
+    /// grammar Hoshi2Star implements (e.g. Keke command tags).
+    pub note_tag_owners: Vec<(String, String)>,
 }
 
 pub fn plugin_categories(
@@ -96,6 +99,11 @@ fn profiled(
     data_files: &[(String, String, Value)],
     outcome: &mut PluginOutcome,
 ) {
+    for family in &profile.plugin.note_tag_families {
+        outcome
+            .note_tag_owners
+            .push((family.clone(), entry.name.clone()));
+    }
     let leaves = entry.parameter_leaves();
     let mut candidates = Vec::new();
     let mut blocked_candidates = Vec::new();

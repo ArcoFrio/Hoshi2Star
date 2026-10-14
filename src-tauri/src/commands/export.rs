@@ -15,7 +15,7 @@ use crate::{
         filter::{classify_file_type, FileClass},
         mv_mz::{
             coverage::plugins::context_is_fill_in,
-            injector, integrity,
+            injector, integrity, keke,
             originals::SnapshotStore,
             plugins_js::{parse_plugin_key, PluginsJs},
         },
@@ -323,9 +323,16 @@ pub async fn export_project(
         .await?;
         entries.extend(wolf_entries);
     } else {
+        // Skill types renamed inside battle-command note tags (linked category).
+        let renames = if engine == "mv_mz" {
+            linked_skill_type_renames(&state.db, &project_id).await?
+        } else {
+            HashMap::new()
+        };
+        let mut has_label_edits = false;
         for file in &files {
-            let rows: Vec<(String, String, bool)> = sqlx::query_as(
-                "SELECT json_key, target_text, text_category IS NULL FROM segments \
+            let rows: Vec<(String, String, bool, String)> = sqlx::query_as(
+                "SELECT json_key, target_text, text_category IS NULL, source_text FROM segments \
                  WHERE source_file_id = ? AND target_text != ''",
             )
             .bind(&file.id)
@@ -333,21 +340,32 @@ pub async fn export_project(
             .await
             .map_err(|e| e.to_string())?;
 
-            if rows.is_empty() {
+            let note_file = engine == "mv_mz" && NOTE_FILE_TYPES.contains(&file.file_type.as_str());
+            if rows.is_empty() && !(note_file && !renames.is_empty()) {
                 continue;
             }
+            let (label_rows, rows): (Vec<_>, Vec<_>) = rows
+                .into_iter()
+                .partition(|(key, ..)| key.starts_with(keke::NOTETAG_KEY_PREFIX));
+            let label_rows: Vec<keke::LabelRow> = label_rows
+                .into_iter()
+                .map(|(key, target, _, source)| (key, target, source))
+                .collect();
+            has_label_edits |= !label_rows.is_empty();
 
             // For mv_mz: apply prefix to core Map segments only (optional
             // categories such as map display names are drawn without escape
             // codes, so a prefix would show up literally).
             let should_prefix = engine != "mv_mz" || file.file_type == "map";
-            let translations =
-                with_font_prefix(rows, font_size, should_prefix, replace_existing, &engine);
-
-            let pairs: Vec<(&str, &str)> = translations
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
+            let mut translations = with_font_prefix(
+                rows.into_iter()
+                    .map(|(key, target, is_core, _)| (key, target, is_core))
+                    .collect(),
+                font_size,
+                should_prefix,
+                replace_existing,
+                &engine,
+            );
             // Relative path inside the zip mirrors the on-disk layout.
             let rel = originals::game_relative_path(&game_path, &file.file_path, &file.file_name);
 
@@ -355,6 +373,10 @@ pub async fn export_project(
             // handled every wolf file; here it is VX Ace vs MV/MZ JSON.
             let bytes = match classify_file_type(&file.file_type) {
                 FileClass::VxAce => {
+                    let pairs: Vec<(&str, &str)> = translations
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect();
                     let raw = std::fs::read(&file.file_path)
                         .map_err(|e| format!("read {}: {e}", file.file_name))?;
                     vx_injector::inject_and_serialize(&raw, &pairs)
@@ -371,6 +393,26 @@ pub async fn export_project(
                 }
                 _ => {
                     let raw = read_original_json(snapshot.as_ref(), &rel, file)?;
+                    if note_file && (!label_rows.is_empty() || !renames.is_empty()) {
+                        let original: serde_json::Value = serde_json::from_str(&raw)
+                            .map_err(|e| format!("parse {}: {e}", file.file_name))?;
+                        translations.extend(
+                            keke::note_rewrites(&original, &label_rows, &renames)
+                                .map_err(|e| format!("{}: {e}", file.file_name))?,
+                        );
+                    } else if !label_rows.is_empty() {
+                        return Err(format!(
+                            "{}: note-tag segments in a file whose notes the plugin does not read",
+                            file.file_name
+                        ));
+                    }
+                    if translations.is_empty() {
+                        continue;
+                    }
+                    let pairs: Vec<(&str, &str)> = translations
+                        .iter()
+                        .map(|(k, v)| (k.as_str(), v.as_str()))
+                        .collect();
                     let bytes = injector::inject_to_bytes(&raw, &pairs)
                         .map_err(|e| format!("inject {}: {e}", file.file_name))?;
                     let planned: HashMap<String, String> = translations.iter().cloned().collect();
@@ -380,6 +422,13 @@ pub async fn export_project(
                 }
             };
             entries.push((rel, bytes));
+        }
+
+        if let Some(store) = snapshot.as_ref() {
+            if !renames.is_empty() || has_label_edits {
+                integrity_issues
+                    .extend(keke_resolution_issues(store, &files, &game_path, &entries)?);
+            }
         }
     }
 
@@ -394,6 +443,93 @@ pub async fn export_project(
     let zip_path = game_dir.join("hoshi2star.zip");
     write_zip(&zip_path, entries)?;
     Ok(zip_path.to_string_lossy().into_owned())
+}
+
+/// MV/MZ database files (`source_files.file_type`) whose entries carry notes.
+const NOTE_FILE_TYPES: &[&str] = &[
+    "actors", "classes", "skills", "items", "weapons", "armors", "enemies", "states",
+];
+
+/// `source → target` of translated skill types that battle-command note tags
+/// look up by name (the linked `system.skill_types` category).
+async fn linked_skill_type_renames(
+    db: &sqlx::SqlitePool,
+    project_id: &str,
+) -> Result<HashMap<String, String>, String> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT s.source_text, s.target_text FROM segments s \
+         JOIN source_files sf ON sf.id = s.source_file_id \
+         WHERE sf.project_id = ? AND s.text_category = 'system.skill_types' \
+           AND s.target_text != '' AND s.context_json LIKE '%keke_skill_type%'",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter(|(source, target)| source != target)
+        .collect())
+}
+
+/// Differential check of Keke command tags over every note file: original
+/// files (snapshot) against the archive entries (or the original, when a file
+/// is not exported), with the original vs exported skill-type lists.
+fn keke_resolution_issues(
+    store: &SnapshotStore,
+    files: &[SourceFile],
+    game_path: &str,
+    entries: &[(String, Vec<u8>)],
+) -> Result<Vec<integrity::IntegrityIssue>, String> {
+    let parse = |bytes: &[u8], label: &str| -> Result<serde_json::Value, String> {
+        serde_json::from_slice(bytes).map_err(|e| format!("parse {label}: {e}"))
+    };
+    let output_of = |rel: &str| {
+        entries
+            .iter()
+            .find(|(name, _)| name == rel)
+            .map(|(_, b)| b.clone())
+    };
+    let skill_types = |json: &serde_json::Value| -> Vec<String> {
+        json.get("skillTypes")
+            .and_then(serde_json::Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .map(|v| v.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let Some(system) = files.iter().find(|file| file.file_name == "System.json") else {
+        return Ok(Vec::new());
+    };
+    let system_rel = originals::game_relative_path(game_path, &system.file_path, &system.file_name);
+    let original_system = parse(
+        &store.read(&system_rel).map_err(|e| e.to_string())?,
+        &system_rel,
+    )?;
+    let output_system = match output_of(&system_rel) {
+        Some(bytes) => parse(&bytes, &system_rel)?,
+        None => original_system.clone(),
+    };
+    let mut note_files = Vec::new();
+    for file in files
+        .iter()
+        .filter(|f| NOTE_FILE_TYPES.contains(&f.file_type.as_str()))
+    {
+        let rel = originals::game_relative_path(game_path, &file.file_path, &file.file_name);
+        let original = parse(&store.read(&rel).map_err(|e| e.to_string())?, &rel)?;
+        let output = match output_of(&rel) {
+            Some(bytes) => parse(&bytes, &rel)?,
+            None => original.clone(),
+        };
+        note_files.push((rel, original, output));
+    }
+    Ok(integrity::verify_keke_resolution(
+        &skill_types(&original_system),
+        &skill_types(&output_system),
+        &note_files,
+    ))
 }
 
 /// `(json_key, target, source, context_json)` of every translated plugins.js segment.
@@ -636,20 +772,49 @@ pub async fn debug_inject_file(
         return Err(format!("{untranslated} segment(s) not yet translated"));
     }
 
-    // Fetch translations (key → target_text, core?).
-    let rows: Vec<(String, String, bool)> = sqlx::query_as(
-        "SELECT json_key, target_text, text_category IS NULL FROM segments \
+    // Linked edits span several files (System.json + every note referencing
+    // a skill type): writing one file alone would break battle commands.
+    if engine == "mv_mz"
+        && !linked_skill_type_renames(&state.db, &file.project_id)
+            .await?
+            .is_empty()
+    {
+        return Err(
+            "This project translates skill types that battle-command note tags look up by name; \
+             those edits span several files. Use Export instead of single-file injection."
+                .to_string(),
+        );
+    }
+
+    // Fetch translations (key → target_text, core?, source).
+    let rows: Vec<(String, String, bool, String)> = sqlx::query_as(
+        "SELECT json_key, target_text, text_category IS NULL, source_text FROM segments \
          WHERE source_file_id = ? AND target_text != ''",
     )
     .bind(&source_file_id)
     .fetch_all(&state.db)
     .await
     .map_err(|e| e.to_string())?;
+    let (label_rows, rows): (Vec<_>, Vec<_>) = rows
+        .into_iter()
+        .partition(|(key, ..)| key.starts_with(keke::NOTETAG_KEY_PREFIX));
+    let label_rows: Vec<keke::LabelRow> = label_rows
+        .into_iter()
+        .map(|(key, target, _, source)| (key, target, source))
+        .collect();
 
     // Apply font-size prefix in-memory (never written to DB).
     // For mv_mz: core Map segments only.
     let should_prefix = engine != "mv_mz" || file.file_type == "map";
-    let segs = with_font_prefix(rows, font_size, should_prefix, replace_existing, &engine);
+    let mut segs = with_font_prefix(
+        rows.into_iter()
+            .map(|(key, target, is_core, _)| (key, target, is_core))
+            .collect(),
+        font_size,
+        should_prefix,
+        replace_existing,
+        &engine,
+    );
 
     // Dispatch by engine class.
     match classify_file_type(&file.file_type) {
@@ -687,8 +852,6 @@ pub async fn debug_inject_file(
             Ok(file.file_path.clone())
         }
         FileClass::Json => {
-            let pairs: Vec<(&str, &str)> =
-                segs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let rel = originals::game_relative_path(&game_path, &file.file_path, &file.file_name);
             let snapshot = if engine == "mv_mz" {
                 Some(
@@ -699,6 +862,16 @@ pub async fn debug_inject_file(
                 None
             };
             let raw = read_original_json(snapshot.as_ref(), &rel, &file)?;
+            if !label_rows.is_empty() {
+                let original: serde_json::Value = serde_json::from_str(&raw)
+                    .map_err(|e| format!("parse {}: {e}", file.file_name))?;
+                segs.extend(
+                    keke::note_rewrites(&original, &label_rows, &HashMap::new())
+                        .map_err(|e| format!("{}: {e}", file.file_name))?,
+                );
+            }
+            let pairs: Vec<(&str, &str)> =
+                segs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let out = injector::inject_to_bytes(&raw, &pairs)
                 .map_err(|e| format!("inject {}: {e}", file.file_name))?;
             let planned: HashMap<String, String> = segs.iter().cloned().collect();

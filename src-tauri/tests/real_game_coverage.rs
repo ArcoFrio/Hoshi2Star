@@ -145,7 +145,24 @@ async fn real_game_scan_enable_translate_export() {
         placeholders.sort();
         let placeholders = placeholders.join(" ");
         let digest = hex::encode(Sha256::digest(source.as_bytes()));
-        let target = format!("EN-{} {placeholders}", &digest[..8]);
+        let target = if context
+            .as_deref()
+            .is_some_and(|c| c.contains("keke_skill_type"))
+        {
+            // Skill types looked up in battle-command tags: one word, no digits.
+            let letters: String = digest[..8]
+                .chars()
+                .map(|c| match c.to_digit(16) {
+                    Some(value) => char::from(b'a' + value as u8),
+                    None => c,
+                })
+                .collect();
+            format!("Type{letters}")
+        } else if placeholders.is_empty() {
+            format!("EN-{}", &digest[..8])
+        } else {
+            format!("EN-{} {placeholders}", &digest[..8])
+        };
         sqlx::query("UPDATE segments SET target_text = ?, status = 'translated' WHERE id = ?")
             .bind(&target)
             .bind(id)

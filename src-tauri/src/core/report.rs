@@ -68,6 +68,7 @@ async fn evaluate_project(
         target_language: String,
         segment_kind: String,
         context_json: Option<String>,
+        text_category: Option<String>,
         status: String,
     }
 
@@ -83,6 +84,7 @@ async fn evaluate_project(
             COALESCE(p.target_language, 'en') AS target_language,
             s.segment_kind,
             s.context_json,
+            s.text_category,
             s.status
          FROM segments s
          JOIN source_files sf ON s.source_file_id = sf.id
@@ -121,6 +123,23 @@ async fn evaluate_project(
         }
     }
 
+    // Skill types looked up by name inside battle-command tags must stay
+    // distinct after translation (indexOf would pick the first match).
+    let mut skill_type_targets = std::collections::HashMap::<String, usize>::new();
+    for row in &rows {
+        if row.text_category.as_deref() == Some("system.skill_types")
+            && row
+                .context_json
+                .as_deref()
+                .is_some_and(|context| context.contains("keke_skill_type"))
+            && !row.target_text.trim().is_empty()
+        {
+            *skill_type_targets
+                .entry(row.target_text.trim().to_string())
+                .or_default() += 1;
+        }
+    }
+
     let mut details = Vec::new();
     let mut ok_count = 0_i64;
     let mut critical_count = 0_i64;
@@ -153,6 +172,15 @@ async fn evaluate_project(
         if variant_count > 1 {
             result.add_error(QaError::InconsistentRepeatedSource {
                 variants: variant_count,
+            });
+        }
+        if row.text_category.as_deref() == Some("system.skill_types")
+            && skill_type_targets
+                .get(row.target_text.trim())
+                .is_some_and(|count| *count > 1)
+        {
+            result.add_error(QaError::ConstraintViolation {
+                rule: qa::CONSTRAINT_KEKE_SKILL_TYPE_UNIQUE.to_string(),
             });
         }
         let critical = result.has_critical_errors();

@@ -333,6 +333,47 @@ pub fn reconstruct_json(
     })
 }
 
+/// Revert exported Keke command-tag edits in a reconstructed data file:
+/// `labels` maps a note pointer to `(occurrence, target, source)` label
+/// segments, `reverse_renames` maps translated skill-type names back.
+pub fn reverse_keke_edits(
+    file_label: &str,
+    reconstruction: Reconstruction,
+    labels: &std::collections::HashMap<String, Vec<(usize, String, String)>>,
+    reverse_renames: &std::collections::HashMap<String, String>,
+) -> Result<Reconstruction, OriginalsError> {
+    if labels.is_empty() && reverse_renames.is_empty() {
+        return Ok(reconstruction);
+    }
+    let invalid = |reason: String| OriginalsError::InvalidJson(file_label.to_string(), reason);
+    let mut json: Value = serde_json::from_slice(&reconstruction.bytes)
+        .map_err(|error| invalid(error.to_string()))?;
+    let mut changed = false;
+    if let Some(entries) = json.as_array_mut() {
+        for (index, entry) in entries.iter_mut().enumerate() {
+            let pointer = format!("/{index}/note");
+            let Some(Value::String(note)) = entry.get_mut("note") else {
+                continue;
+            };
+            let edits = labels.get(&pointer).map(Vec::as_slice).unwrap_or(&[]);
+            if let Some(restored) =
+                crate::engines::mv_mz::keke::reverse_note_edits(note, edits, reverse_renames)
+            {
+                *note = restored;
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(reconstruction);
+    }
+    Ok(Reconstruction {
+        bytes: serde_json::to_vec(&json).map_err(|error| invalid(error.to_string()))?,
+        provenance: Provenance::Reconstructed,
+        drift: reconstruction.drift,
+    })
+}
+
 /// One translated `plugins.js` parameter, as recorded in the project.
 #[derive(Debug, Clone)]
 pub struct PluginSegment {

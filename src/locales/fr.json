@@ -319,7 +319,11 @@
       "constraint": {
         "plain_text_value": "Ce plugin convertit les valeurs : la traduction ne doit pas être seulement un nombre, true/false ou du JSON",
         "no_escape_codes": "Affiché en texte brut ici : les codes d'échappement apparaîtraient tels quels",
-        "other": "Enfreint une règle d'affichage : {{rule}}"
+        "other": "Enfreint une règle d'affichage : {{rule}}",
+        "keke_skill_type": "Recherché dans les balises de commandes de combat : un seul mot, sans espaces, `,` `/` `>` `:` ni chiffres",
+        "keke_skill_type_unique": "Un autre type de compétence a la même traduction : les commandes de combat pointeraient vers le mauvais type",
+        "keke_tag_field": "Dans une balise de note : `,` ou `>` casserait la commande de combat",
+        "keke_no_spaces": "Le plugin supprime les espaces ici (« Whip Attack » s'affiche « WhipAttack »)"
       }
     },
     "severity": {
@@ -573,7 +577,10 @@
     "constraint": {
       "keep_format_specifiers": "Conserver chaque %1, %2…",
       "no_escape_codes": "Texte brut uniquement : des codes comme \\C[n] ou \\FS[n] s'afficheraient tels quels",
-      "plain_text_value": "Doit rester du texte brut : le plugin convertit true/false, les nombres et le JSON"
+      "plain_text_value": "Doit rester du texte brut : le plugin convertit true/false, les nombres et le JSON",
+      "keke_skill_type": "Un seul mot : sans espaces, `,` `/` `>` `:` ni chiffres ASCII, et différent des autres types de compétence",
+      "keke_tag_field": "Pas de `,` ni de `>` (ils casseraient la balise de note)",
+      "keke_no_spaces": "Le plugin supprime les espaces (« Whip Attack » → « WhipAttack »)"
     },
     "category": {
       "system": {
@@ -602,6 +609,14 @@
         "display_name": {
           "title": "Noms affichés des cartes",
           "visibleIn": "Bandeau du nom de carte affiché à l'entrée d'une carte"
+        }
+      },
+      "notetag": {
+        "keke_command": {
+          "labels": {
+            "title": "Libellés des commandes de combat (balises Keke)",
+            "visibleIn": "Commandes des personnages en combat"
+          }
         }
       }
     },

@@ -91,7 +91,14 @@ pub async fn scan_text_coverage(
     project_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<CoverageView, String> {
-    let Some((report, store)) = scan_project(&state.db, &state.data_dir, &project_id).await? else {
+    let Some((report, store)) = scan_project(
+        &state.db,
+        &state.data_dir,
+        state.plugin_profiles.clone(),
+        &project_id,
+    )
+    .await?
+    else {
         return Ok(unsupported_view());
     };
     build_view(&state.db, &project_id, report, &store).await
@@ -105,7 +112,14 @@ pub async fn set_text_categories(
     changes: Vec<CategoryChange>,
     state: tauri::State<'_, AppState>,
 ) -> Result<CoverageView, String> {
-    let Some((report, store)) = scan_project(&state.db, &state.data_dir, &project_id).await? else {
+    let Some((report, store)) = scan_project(
+        &state.db,
+        &state.data_dir,
+        state.plugin_profiles.clone(),
+        &project_id,
+    )
+    .await?
+    else {
         return Err("This engine has no optional text categories.".to_string());
     };
     apply_changes(&state.db, &project_id, &report, &changes).await?;
@@ -130,6 +144,7 @@ fn unsupported_view() -> CoverageView {
 pub async fn scan_project(
     db: &SqlitePool,
     data_dir: &Path,
+    profiles: std::sync::Arc<ProfileSet>,
     project_id: &str,
 ) -> Result<Option<(CoverageReport, SnapshotStore)>, String> {
     let (game_path, engine): (String, String) =
@@ -234,7 +249,7 @@ pub async fn scan_project(
             plugin_sources: &plugin_sources,
             core_sources: &core_sources,
             plugins_rel: &plugins_rel,
-            profiles: ProfileSet::embedded(),
+            profiles: &profiles,
         });
         Ok((report, store))
     });

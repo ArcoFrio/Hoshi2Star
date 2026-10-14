@@ -34,6 +34,13 @@ pub enum IntegrityIssue {
     /// The original value no longer matches what was extracted (or a fill-in
     /// target is no longer empty): the edit would overwrite unknown text.
     OriginalChanged { file: String, pointer: String },
+    /// A cross-file reference (e.g. a battle-command tag looking up a skill
+    /// type by name) would resolve differently after export.
+    LinkedReferenceChanged {
+        file: String,
+        pointer: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for IntegrityIssue {
@@ -54,6 +61,11 @@ impl fmt::Display for IntegrityIssue {
                 f,
                 "{file} {pointer}: the original text no longer matches what was extracted"
             ),
+            Self::LinkedReferenceChanged {
+                file,
+                pointer,
+                detail,
+            } => write!(f, "{file} {pointer}: {detail}"),
             Self::PlannedValueMissing { file, pointer } => {
                 write!(
                     f,
@@ -306,6 +318,46 @@ pub fn verify_plugins_edit(
     issues
 }
 
+/// Re-run Keke_VariableActorCommand's tag resolution on the original and the
+/// exported data: every command tag must resolve to the same command (symbol,
+/// skill-type index / skill id / item id, removal flag). `files` holds
+/// `(file label, original JSON, output JSON)` of every data file with notes.
+pub fn verify_keke_resolution(
+    original_skill_types: &[String],
+    output_skill_types: &[String],
+    files: &[(String, Value, Value)],
+) -> Vec<IntegrityIssue> {
+    use crate::engines::mv_mz::keke::resolve;
+
+    let mut issues = Vec::new();
+    for (file, before, after) in files {
+        let entries = before.as_array().into_iter().flatten().enumerate();
+        for (index, entry) in entries {
+            let Some(note) = entry.get("note").and_then(Value::as_str) else {
+                continue;
+            };
+            let pointer = format!("/{index}/note");
+            let output_note = after
+                .pointer(&pointer)
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let expected = resolve(note, original_skill_types);
+            let actual = resolve(output_note, output_skill_types);
+            if expected != actual {
+                issues.push(IntegrityIssue::LinkedReferenceChanged {
+                    file: file.clone(),
+                    pointer,
+                    detail: format!(
+                        "{} command tag(s) would resolve differently",
+                        expected.len().max(actual.len())
+                    ),
+                });
+            }
+        }
+    }
+    issues
+}
+
 /// Render a bounded, human-readable summary for an export error.
 pub fn summarize(issues: &[IntegrityIssue]) -> String {
     const SHOWN: usize = 10;
@@ -458,6 +510,28 @@ mod tests {
             .any(|i| matches!(i, IntegrityIssue::UnplannedChange { pointer, .. } if pointer.contains('B'))));
         let header = PLUGINS.replace("// header", "// changed");
         assert!(!verify_plugins_edit("js/plugins.js", PLUGINS, &header, &[]).is_empty());
+    }
+
+    #[test]
+    fn keke_resolution_catches_a_tag_left_behind_by_a_rename() {
+        let types = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let original = serde_json::json!([null, {"note": "<コマンド:スキル/鞭,48,鞭攻撃,76>"}]);
+        let rewritten =
+            serde_json::json!([null, {"note": "<コマンド:スキル/Whip,48,WhipAttack,76>"}]);
+        let files_ok = vec![("data/Weapons.json".to_string(), original.clone(), rewritten)];
+        assert!(
+            verify_keke_resolution(&types(&["", "鞭"]), &types(&["", "Whip"]), &files_ok)
+                .is_empty()
+        );
+
+        // System.json renamed but the tag still says 鞭: the command would vanish.
+        let files_stale = vec![("data/Weapons.json".to_string(), original.clone(), original)];
+        let issues =
+            verify_keke_resolution(&types(&["", "鞭"]), &types(&["", "Whip"]), &files_stale);
+        assert!(matches!(
+            issues.as_slice(),
+            [IntegrityIssue::LinkedReferenceChanged { pointer, .. }] if pointer == "/1/note"
+        ));
     }
 
     #[test]

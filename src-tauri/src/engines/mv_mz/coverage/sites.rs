@@ -73,6 +73,40 @@ fn push(sites: &mut Vec<Site>, kind: SiteKind, location: String, text: &str) {
     }
 }
 
+static RE_NOTE_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<[^<>\n]*>").expect("RE_NOTE_TAG must compile"));
+static RE_CLOSING_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"</([^<>\n]+)>").expect("RE_CLOSING_TAG must compile"));
+
+/// Keep only the parts of a note that code can read as data: single-line
+/// tags (`<key>`, `<key:value>`, as parsed by `DataManager.extractMetadata`
+/// and plugins) and the bodies of block tags (`<Name>…</Name>`). Free text
+/// outside every tag is an editor memo; it is blanked out (one space per
+/// character, so boundaries are preserved).
+pub fn readable_note_text(note: &str) -> String {
+    let mut keep: Vec<std::ops::Range<usize>> =
+        RE_NOTE_TAG.find_iter(note).map(|m| m.range()).collect();
+    for closing in RE_CLOSING_TAG.captures_iter(note) {
+        let (Some(whole), Some(name)) = (closing.get(0), closing.get(1)) else {
+            continue;
+        };
+        let needle = format!("<{}", name.as_str().trim()).to_ascii_lowercase();
+        let before = note[..whole.start()].to_ascii_lowercase();
+        if let Some(open) = before.rfind(&needle) {
+            keep.push(open..whole.end());
+        }
+    }
+    note.char_indices()
+        .map(|(offset, ch)| {
+            if keep.iter().any(|span| span.contains(&offset)) {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
 /// Database row (Actors, Skills, …), CommonEvent or Troop.
 fn collect_entry(file_name: &str, base: &str, entry: &Value, sites: &mut Vec<Site>) {
     if let Some(note) = entry.get("note").and_then(Value::as_str) {
@@ -80,7 +114,7 @@ fn collect_entry(file_name: &str, base: &str, entry: &Value, sites: &mut Vec<Sit
             sites,
             SiteKind::Note,
             format!("{file_name} {base}/note"),
-            note,
+            &readable_note_text(note),
         );
     }
     if let Some(formula) = entry.pointer("/damage/formula").and_then(Value::as_str) {
@@ -114,7 +148,12 @@ fn collect_entry(file_name: &str, base: &str, entry: &Value, sites: &mut Vec<Sit
 
 fn collect_map(file_name: &str, map: &Value, sites: &mut Vec<Site>) {
     if let Some(note) = map.get("note").and_then(Value::as_str) {
-        push(sites, SiteKind::Note, format!("{file_name} /note"), note);
+        push(
+            sites,
+            SiteKind::Note,
+            format!("{file_name} /note"),
+            &readable_note_text(note),
+        );
     }
     if let Some(events) = map.get("events").and_then(Value::as_array) {
         for (index, event) in events.iter().enumerate() {
@@ -375,6 +414,19 @@ mod tests {
             .iter()
             .any(|s| s.text.contains("comment") || s.text.contains("ラベル")));
         assert!(!sites.iter().any(|s| s.text == "表示名"));
+    }
+
+    #[test]
+    fn note_memos_outside_tags_are_not_readable_data() {
+        let note = "チュートリアル用\n<CollapseId:sink2>\n鞭攻撃\n<Custom Text>\n炎の説明\n</Custom Text>\n<NoBook>";
+        let readable = readable_note_text(note);
+        assert!(!readable.contains("チュートリアル用"));
+        assert!(!readable.contains("鞭攻撃"));
+        assert!(readable.contains("<CollapseId:sink2>"));
+        assert!(readable.contains("炎の説明"));
+        assert!(readable.contains("<NoBook>"));
+        assert_eq!(readable.chars().count(), note.chars().count());
+        assert!(token_occurs("鞭攻撃", &readable).is_none());
     }
 
     #[test]

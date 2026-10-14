@@ -5,13 +5,16 @@
 //! the per-installation data directory. Only RPG Maker MV/MZ projects are
 //! snapshotted: Wolf and VX Ace exports keep reading the game folder.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use sqlx::SqlitePool;
 
 use crate::engines::filter::{classify_file_type, FileClass};
+use crate::engines::mv_mz::keke;
 use crate::engines::mv_mz::originals::{
-    reconstruct_json, reconstruct_plugins_js, CoreSegment, PluginSegment, Provenance, SnapshotStore,
+    reconstruct_json, reconstruct_plugins_js, reverse_keke_edits, CoreSegment, PluginSegment,
+    Provenance, SnapshotStore,
 };
 
 /// Snapshot directory of one project.
@@ -69,6 +72,22 @@ pub async fn ensure_mv_mz_snapshot(
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
 
+    // Translated skill types renamed inside battle-command tags at export:
+    // undone when a snapshot has to be rebuilt from an exported folder.
+    let reverse_renames: HashMap<String, String> = sqlx::query_as::<_, (String, String)>(
+        "SELECT s.target_text, s.source_text FROM segments s \
+         JOIN source_files sf ON sf.id = s.source_file_id \
+         WHERE sf.project_id = ? AND s.text_category = 'system.skill_types' \
+           AND s.target_text != '' AND s.context_json LIKE '%keke_skill_type%'",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?
+    .into_iter()
+    .filter(|(target, source)| target != source)
+    .collect();
+
     let mut changed = false;
     for (file_id, file_name, file_path, file_type) in files {
         let class = classify_file_type(&file_type);
@@ -91,14 +110,25 @@ pub async fn ensure_mv_mz_snapshot(
         .fetch_all(pool)
         .await
         .map_err(|error| error.to_string())?;
-        let segments: Vec<CoreSegment> = segments
-            .into_iter()
-            .map(|(key, source, target)| CoreSegment {
-                key,
-                source,
-                target,
-            })
-            .collect();
+        // Plain JSON pointers are reset by `reconstruct_json`; note-tag label
+        // segments are reverted inside their note afterwards.
+        let mut labels: HashMap<String, Vec<(usize, String, String)>> = HashMap::new();
+        let mut core = Vec::new();
+        for (key, source, target) in segments {
+            if let Some((occurrence, _, pointer)) = keke::parse_label_key(&key) {
+                labels
+                    .entry(pointer)
+                    .or_default()
+                    .push((occurrence, target, source));
+            } else {
+                core.push(CoreSegment {
+                    key,
+                    source,
+                    target,
+                });
+            }
+        }
+        let renames = reverse_renames.clone();
 
         let language = source_language.clone();
         let label = rel.clone();
@@ -106,7 +136,8 @@ pub async fn ensure_mv_mz_snapshot(
             let result = std::fs::read(&file_path)
                 .map_err(|error| format!("read {label}: {error}"))
                 .and_then(|disk| {
-                    reconstruct_json(&label, &disk, &segments, &language)
+                    reconstruct_json(&label, &disk, &core, &language)
+                        .and_then(|rec| reverse_keke_edits(&label, rec, &labels, &renames))
                         .map_err(|error| error.to_string())
                 })
                 .and_then(|rec| {
