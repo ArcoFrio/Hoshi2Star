@@ -195,7 +195,7 @@ export function AppToolbar({
     const selected = await open({
       multiple: false,
       title: t("pack.importPick"),
-      filters: [{ name: "Hoshiyomi pack", extensions: ["h2s"] }],
+      filters: [{ name: "Hoshi2Star pack", extensions: ["h2s"] }],
     });
     if (!selected) return;
     setIsPreviewingPack(true);

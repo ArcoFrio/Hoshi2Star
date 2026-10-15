@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-export function HoshiyomiMark({
+export function Hoshi2StarMark({
   compact = false,
   className,
 }: {
@@ -10,7 +10,7 @@ export function HoshiyomiMark({
   return (
     <div
       className={cn("flex min-w-0 items-center gap-2.5 select-none", className)}
-      aria-label="Hoshiyomi — 星詠み工房"
+      aria-label="Hoshi2Star — 星 → ★"
     >
       <span
         className="brand-seal relative grid size-9 shrink-0 place-items-center rounded-full"
@@ -21,13 +21,10 @@ export function HoshiyomiMark({
       {!compact && (
         <span className="min-w-0 flex-1 leading-none">
           <span className="block truncate text-sm font-semibold tracking-[-0.02em]">
-            Hoshiyomi
+            Hoshi2Star
           </span>
-          <span
-            lang="ja"
-            className="mt-1 block truncate text-[9px] font-medium tracking-[0.18em] text-muted-foreground"
-          >
-            星詠み工房
+          <span className="mt-1 block truncate text-[9px] font-medium tracking-[0.18em] text-muted-foreground">
+            星 → ★
           </span>
         </span>
       )}

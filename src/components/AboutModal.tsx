@@ -5,7 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Copy, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { HoshiyomiMark } from "@/components/brand/HoshiyomiMark";
+import { Hoshi2StarMark } from "@/components/brand/Hoshi2StarMark";
 import {
   Dialog,
   DialogContent,
@@ -78,8 +78,8 @@ export function AboutModal({ open: isOpen, onClose }: AboutModalProps) {
         {/* Header */}
         <div className="flex min-w-0 items-center justify-between pr-10">
           <div className="flex min-w-0 items-center gap-2">
-            <DialogTitle className="sr-only">Hoshiyomi</DialogTitle>
-            <HoshiyomiMark />
+            <DialogTitle className="sr-only">Hoshi2Star</DialogTitle>
+            <Hoshi2StarMark />
             {version && (
               <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
                 v{version}

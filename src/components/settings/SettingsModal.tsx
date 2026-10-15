@@ -155,7 +155,7 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
           <DialogDescription className="sr-only">
             {t("settings.sections")}
           </DialogDescription>
-          <span className="pr-10 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">星詠み工房</span>
+          <span className="pr-10 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">星 → ★</span>
         </div>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col border-y min-[620px]:flex-row">

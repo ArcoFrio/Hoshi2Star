@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Hoshiyomi",
+  "productName": "hoshi2star",
   "version": "0.4.10",
   "identifier": "com.blackat.hoshi2star",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Hoshiyomi — 星詠み工房",
+        "title": "Hoshi2Star",
         "width": 1600,
         "height": 900,
         "minWidth": 1450,
