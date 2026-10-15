@@ -14,7 +14,7 @@ au contributeur, sauvegarder la base locale, fixer le nom affiché, commiter le 
 
 - Recherches (2026-09-24/25) : panorama des outils de traduction de jeux, alternatives
   à Ollama, offres cloud, petits modèles, crates Rust multi-fournisseurs. Rapports dans
-  `reports/` et notes dans `research_notes/` (non suivis par Git, emplacement à décider).
+  `docs/research/rapports/` et notes dans `docs/research/notes/`.
 - Revue des PR #5 (texte plugins/système) et #6 (text fitting MZ) d'ArcoFrio (fork),
   base `origin/main` @ `7737d9f`. #6 est empilée sur #5.
 - Sauvegarde de la base : `~/.local/share/com.blackat.hoshi2star/backups/hoshi2star-before-pr-merge-2026-10-15-1234.db`

@@ -20,8 +20,8 @@ local commité sur `codex/shared-project-continuity`. Aucune PR fusionnée.
 - `origin/main` @ `7737d9f`. `codex/hoshiyomi-redesign` @ `04dd416` (2 commits : refonte UI
   « Hoshiyomi » + terminologie simplifiée avec migration 0009), non fusionnée.
 - PR #5 (`ArcoFrio:feat/mv-mz-plugin-text`) et #6 (`feat/mv-mz-text-fitting`, empilée sur #5) ouvertes.
-- Non suivis volontairement : `research_notes/`, `reports/` (rapports de recherche, emplacement
-  à décider), `.claude/skills/find-skills`, `.claude/skills/make-interfaces-feel-better`.
+- Rapports de recherche : `docs/research/rapports/` (notes sources dans `docs/research/notes/`).
+- Non suivis volontairement : `.claude/skills/find-skills`, `.claude/skills/make-interfaces-feel-better`.
 
 ## Contexte utile, sans refaire le travail
 
