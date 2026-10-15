@@ -3,8 +3,9 @@
 **Mis à jour :** 2026-10-15 — Claude.
 **Objectif utilisateur :** intégrer les PR externes #5/#6 d'ArcoFrio en sécurité, après
 avoir consolidé `main`.
-**Statut :** revue faite, base sauvegardée, nom affiché fixé à **Hoshi2Star**, travail
-local commité sur `codex/shared-project-continuity`. Aucune PR fusionnée.
+**Statut :** revue faite, base sauvegardée, nom affiché fixé à **Hoshi2Star**. PR ouvertes
+(non fusionnées) : #7 (continuité, BMAD, recherches) et #8 (`feat/redesign-terminology` :
+refonte + terminologie + migration 0009, branding Hoshi2Star). Gates verts sur les deux.
 
 ## Dernier point atteint
 
@@ -41,8 +42,8 @@ local commité sur `codex/shared-project-continuity`. Aucune PR fusionnée.
 
 ## Prochaine action exacte
 
-1. Créer une PR qui fusionne `codex/hoshiyomi-redesign` dans `main` en remplaçant
-   « Hoshiyomi » par « Hoshi2Star » ; lancer le gate complet.
+1. L'utilisateur relit et fusionne #7 puis #8. Après #7, `index.html` conflit trivial dans #8 :
+   prendre la version de #8 (`lang="fr"`, `theme-color`, titre Hoshi2Star).
 2. L'utilisateur envoie la réponse à ArcoFrio (correctifs + rebase sur le nouveau `main`
    + question ouverte sur les modèles locaux 8/12/16 Go).
 3. À réception : nouvelle revue + gate, test sur 2–3 jeux MV/MZ, merge #5 puis #6,
