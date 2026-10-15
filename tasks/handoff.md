@@ -3,9 +3,10 @@
 **Mis à jour :** 2026-10-15 — Claude.
 **Objectif utilisateur :** intégrer les PR externes #5/#6 d'ArcoFrio en sécurité, après
 avoir consolidé `main`.
-**Statut :** revue faite, base sauvegardée, nom affiché fixé à **Hoshi2Star**. PR ouvertes
-(non fusionnées) : #7 (continuité, BMAD, recherches) et #8 (`feat/redesign-terminology` :
-refonte + terminologie + migration 0009, branding Hoshi2Star). Gates verts sur les deux.
+**Statut :** revue faite, base sauvegardée, nom affiché fixé à **Hoshi2Star**. #7 (continuité,
+BMAD, recherches) et #8 (refonte + terminologie + migration 0009, branding Hoshi2Star)
+fusionnées dans `main` le 2026-10-15 (`8bff11b`). `main` contient désormais 0009 :
+le trou de numérotation de la PR #5 est résolu dès qu'elle est rebasée.
 
 ## Dernier point atteint
 
@@ -28,7 +29,7 @@ refonte + terminologie + migration 0009, branding Hoshi2Star). Gates verts sur l
 
 - Nom affiché : Hoshi2Star. `productName` = `hoshi2star`, identifiant `com.blackat.hoshi2star`
   inchangés. Ne pas réintroduire « Hoshi2Stars » ni « Hoshiyomi ».
-- Ne pas fusionner #5 avant `codex/hoshiyomi-redesign` : sinon `VersionMissing(9)` au démarrage.
+- #5 doit être rebasée sur `main` (qui contient 0009) avant fusion.
 - #5 contient une faille bloquante (`core/originals.rs`, `project_id` non validé avant
   `remove_dir_all`). Détails et liste des correctifs demandés dans le journal du 2026-10-15.
 - `OpenAiCompatibleProvider` existe déjà (voir `tasks/lessons.md`).
@@ -42,8 +43,7 @@ refonte + terminologie + migration 0009, branding Hoshi2Star). Gates verts sur l
 
 ## Prochaine action exacte
 
-1. L'utilisateur relit et fusionne #7 puis #8. Après #7, `index.html` conflit trivial dans #8 :
-   prendre la version de #8 (`lang="fr"`, `theme-color`, titre Hoshi2Star).
+1. Nouvelle interface lancée par l'utilisateur sur sa base locale (`pnpm tauri:linux`) : OK (2026-10-15).
 2. L'utilisateur envoie la réponse à ArcoFrio (correctifs + rebase sur le nouveau `main`
    + question ouverte sur les modèles locaux 8/12/16 Go).
 3. À réception : nouvelle revue + gate, test sur 2–3 jeux MV/MZ, merge #5 puis #6,
