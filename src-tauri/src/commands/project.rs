@@ -85,9 +85,11 @@ pub async fn open_project(
                     project,
                     was_restored: true,
                 });
-            } else {
+            } else if originals::is_project_id(&mf.project_id) {
                 // Manifest exists but project was deleted from DB — reuse the same ID
                 preserved_project_id = Some(mf.project_id.clone());
+            } else {
+                log::warn!("ignoring malformed project id in the manifest of {path}");
             }
         }
         Ok(None) => {}

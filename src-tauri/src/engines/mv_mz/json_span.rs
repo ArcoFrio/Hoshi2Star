@@ -314,10 +314,17 @@ fn walk_leaves(node: &SpanNode, path: &mut Vec<String>, visit: &mut dyn FnMut(&[
 // Parser
 // ---------------------------------------------------------------------------
 
+/// Deepest object/array nesting accepted in one JSON text (the same limit as
+/// `serde_json`): `plugins.js` comes from the game folder, and unbounded
+/// nesting would overflow the stack. JSON-in-string levels need no limit of
+/// their own: each level doubles the escaping, so input size bounds them.
+const MAX_DEPTH: usize = 128;
+
 struct Parser<'a> {
     text: &'a str,
     bytes: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -326,7 +333,21 @@ impl<'a> Parser<'a> {
             text,
             bytes: text.as_bytes(),
             pos: start,
+            depth: 0,
         }
+    }
+
+    fn nested(
+        &mut self,
+        container: fn(&mut Self) -> Result<SpanNode, JsonSpanError>,
+    ) -> Result<SpanNode, JsonSpanError> {
+        if self.depth == MAX_DEPTH {
+            return Err(self.error("nesting too deep"));
+        }
+        self.depth += 1;
+        let node = container(self);
+        self.depth -= 1;
+        node
     }
 
     fn error(&self, reason: &'static str) -> JsonSpanError {
@@ -344,8 +365,8 @@ impl<'a> Parser<'a> {
 
     fn value(&mut self) -> Result<SpanNode, JsonSpanError> {
         match self.bytes.get(self.pos) {
-            Some(b'{') => self.object(),
-            Some(b'[') => self.array(),
+            Some(b'{') => self.nested(Self::object),
+            Some(b'[') => self.nested(Self::array),
             Some(b'"') => {
                 let start = self.pos;
                 let value = self.string()?;
@@ -604,6 +625,21 @@ mod tests {
     fn lone_surrogates_are_rejected() {
         assert!(parse(r#""\ud800""#).is_err());
         assert!(parse(r#""\udc00x""#).is_err());
+    }
+
+    #[test]
+    fn nesting_is_bounded_instead_of_overflowing_the_stack() {
+        let nested = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+        assert!(parse(&nested(MAX_DEPTH)).is_ok());
+        assert!(matches!(
+            parse(&nested(MAX_DEPTH + 1)),
+            Err(JsonSpanError::Syntax {
+                reason: "nesting too deep",
+                ..
+            })
+        ));
+        // Far past the limit: an error, not a crash.
+        assert!(parse(&nested(1_000_000)).is_err());
     }
 
     #[test]

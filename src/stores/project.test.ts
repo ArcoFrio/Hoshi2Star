@@ -3,10 +3,12 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 
 const toastSuccess = vi.fn();
 const toastWarning = vi.fn();
+const toastInfo = vi.fn();
 vi.mock("sonner", () => ({
   toast: {
     success: (...args: unknown[]) => toastSuccess(...args),
     warning: (...args: unknown[]) => toastWarning(...args),
+    info: (...args: unknown[]) => toastInfo(...args),
     error: vi.fn(),
   },
 }));
@@ -93,6 +95,7 @@ const OFFERED: CoverageView = {
 beforeEach(() => {
   toastSuccess.mockClear();
   toastWarning.mockClear();
+  toastInfo.mockClear();
   useProjectStore.setState(initialState, true);
   useCoverageStore.setState({ open: false, view: null, error: null });
 });
@@ -140,8 +143,8 @@ describe("project store — openProject thunk", () => {
           return [];
         case "get_project_stats":
           return STATS;
-        case "scan_text_coverage":
-          return EMPTY_COVERAGE;
+        case "get_text_coverage_status":
+          return { supported: true, hasDecisions: true };
         default:
           throw new Error(`unexpected command: ${cmd}`);
       }
@@ -149,6 +152,8 @@ describe("project store — openProject thunk", () => {
 
     await openProject("/tmp/game");
     expect(useProjectStore.getState().projects).toHaveLength(1);
+    expect(toastWarning).not.toHaveBeenCalled();
+    expect(toastInfo).not.toHaveBeenCalled();
   });
 
   it("updates a restored project without duplicating its library card", async () => {
@@ -162,7 +167,9 @@ describe("project store — openProject thunk", () => {
       }
       if (cmd === "get_source_files") return [];
       if (cmd === "get_project_stats") return STATS;
-      if (cmd === "scan_text_coverage") return EMPTY_COVERAGE;
+      if (cmd === "get_text_coverage_status") {
+        return { supported: true, hasDecisions: true };
+      }
       throw new Error(`unexpected command: ${cmd}`);
     });
 
@@ -172,9 +179,10 @@ describe("project store — openProject thunk", () => {
     expect(useProjectStore.getState().projects[0].name).toBe("Updated title");
   });
 
-  it("enables only verified text categories after a fresh MV/MZ extraction", async () => {
-    let applied: unknown;
-    mockIPC((cmd, args) => {
+  it("offers the coverage review after a fresh MV/MZ extraction without enabling anything", async () => {
+    const calls: string[] = [];
+    mockIPC((cmd) => {
+      calls.push(cmd);
       switch (cmd) {
         case "open_project":
           return { project: PROJECT, wasRestored: false };
@@ -184,9 +192,6 @@ describe("project store — openProject thunk", () => {
           return STATS;
         case "scan_text_coverage":
           return OFFERED;
-        case "set_text_categories":
-          applied = args;
-          return { ...OFFERED, hasDecisions: true };
         default:
           throw new Error(`unexpected command: ${cmd}`);
       }
@@ -194,15 +199,22 @@ describe("project store — openProject thunk", () => {
 
     await openProject("/tmp/game");
 
-    expect(applied).toEqual({
-      projectId: "p1",
-      changes: [{ categoryKey: "system.equip_types", enabled: true }],
-    });
+    expect(calls).not.toContain("set_text_categories");
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    // Only the verified category counts: the blocked one can never be enabled.
+    expect(toastInfo.mock.calls[0][0]).toContain("1");
+    const options = toastInfo.mock.calls[0][1] as {
+      action: { onClick: () => void };
+    };
     expect(useCoverageStore.getState().open).toBe(false);
+    options.action.onClick();
+    expect(useCoverageStore.getState().open).toBe(true);
   });
 
-  it("opens the coverage review instead of enabling anything for a restored project", async () => {
+  it("offers the review of an undecided restored project without scanning it", async () => {
+    const calls: string[] = [];
     mockIPC((cmd) => {
+      calls.push(cmd);
       switch (cmd) {
         case "open_project":
           return { project: PROJECT, wasRestored: true };
@@ -210,8 +222,8 @@ describe("project store — openProject thunk", () => {
           return [];
         case "get_project_stats":
           return STATS;
-        case "scan_text_coverage":
-          return OFFERED;
+        case "get_text_coverage_status":
+          return { supported: true, hasDecisions: false };
         default:
           throw new Error(`unexpected command: ${cmd}`);
       }
@@ -219,8 +231,9 @@ describe("project store — openProject thunk", () => {
 
     await openProject("/tmp/game");
 
-    expect(useCoverageStore.getState().open).toBe(true);
-    expect(useCoverageStore.getState().view?.categories).toHaveLength(2);
+    expect(calls).not.toContain("scan_text_coverage");
+    expect(toastInfo).toHaveBeenCalledTimes(1);
+    expect(useCoverageStore.getState().open).toBe(false);
   });
 
   it("never fails opening when the coverage scan fails", async () => {

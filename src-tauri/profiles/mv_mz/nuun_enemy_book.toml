@@ -10,7 +10,8 @@
 [plugin]
 name = "nuun/NUUN_EnemyBook"
 title = "Enemy book (NUUN_EnemyBook)"
-verified_versions = ["2.23.4"]
+# Pinned by source hash: a `@version` header is shared by edited copies.
+verified_sha256 = ["d4c32f2bd39394bfe56b244f2caf234e88869821558aba57d5bc5e9fd0d830b5"]
 reference = "NUUN_EnemyBook Ver.2.23.4: CommandName/EnemyInfoCommandName → addCommand; CategoryName, PageCategoryName → addCommand; ContentName → completion counter text; AnalyzeMissMessage → format(%1 target, %2 user); paramName → row labels."
 
 [[display]]

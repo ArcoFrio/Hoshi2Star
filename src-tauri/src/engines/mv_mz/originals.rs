@@ -17,6 +17,11 @@
 //! `source_text` restores the file. A pointer whose disk value cannot be
 //! explained is recorded as *drift* (the game itself changed) instead of being
 //! guessed.
+//!
+//! Each entry also remembers the checksums of game-folder versions known to
+//! correspond to it (the disk at capture, every export written from it). A
+//! disk file matching none of them is rebuilt and compared: when the game
+//! itself was updated, the snapshot follows (see `core::originals`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -81,7 +86,14 @@ pub struct SnapshotEntry {
     pub provenance: Provenance,
     #[serde(default)]
     pub drift: Vec<DriftedPointer>,
+    /// sha256 of game-folder bytes known to correspond to this original: the
+    /// disk at capture, exports written from it, older exports found on disk.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_disk: Vec<String>,
 }
+
+/// Remembered game-folder checksums per file (oldest dropped first).
+const KNOWN_DISK_LIMIT: usize = 16;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,9 +177,36 @@ impl SnapshotStore {
                 sha256: sha256_hex(bytes),
                 provenance,
                 drift,
+                known_disk: Vec::new(),
             },
         );
         Ok(())
+    }
+
+    /// `true` when game-folder bytes with checksum `disk_sha256` are this
+    /// original itself or a version already known to correspond to it.
+    pub fn is_known_disk(&self, rel: &str, disk_sha256: &str) -> bool {
+        self.manifest.files.get(rel).is_some_and(|entry| {
+            entry.sha256 == disk_sha256 || entry.known_disk.iter().any(|sha| sha == disk_sha256)
+        })
+    }
+
+    /// Record that game-folder bytes with checksum `disk_sha256` correspond to
+    /// the original of `rel` (an export of it, or the disk it was taken from).
+    /// The caller saves the store.
+    pub fn remember_disk(&mut self, rel: &str, disk_sha256: &str) {
+        let Some(entry) = self.manifest.files.get_mut(rel) else {
+            return;
+        };
+        if entry.sha256 == disk_sha256 {
+            return;
+        }
+        entry.known_disk.retain(|sha| sha != disk_sha256);
+        entry.known_disk.push(disk_sha256.to_string());
+        if entry.known_disk.len() > KNOWN_DISK_LIMIT {
+            let excess = entry.known_disk.len() - KNOWN_DISK_LIMIT;
+            entry.known_disk.drain(..excess);
+        }
     }
 
     /// Read the original of `rel`, verifying its recorded checksum.
@@ -372,6 +411,51 @@ pub fn reverse_keke_edits(
         provenance: Provenance::Reconstructed,
         drift: reconstruction.drift,
     })
+}
+
+/// Undo an export's language switch in a `System.json` rebuilt from disk: a
+/// `locale` equal to the export target while the snapshot holds another one
+/// was written by Hoshi2Star, not by the game.
+pub fn revert_locale_switch(
+    file_label: &str,
+    reconstruction: Reconstruction,
+    snapshot: &[u8],
+    target_locale: &str,
+) -> Result<Reconstruction, OriginalsError> {
+    let invalid = |reason: String| OriginalsError::InvalidJson(file_label.to_string(), reason);
+    let original: Value =
+        serde_json::from_slice(snapshot).map_err(|error| invalid(error.to_string()))?;
+    let Some(before) = original.get("locale").and_then(Value::as_str) else {
+        return Ok(reconstruction);
+    };
+    let mut json: Value = serde_json::from_slice(&reconstruction.bytes)
+        .map_err(|error| invalid(error.to_string()))?;
+    match json.get_mut("locale") {
+        Some(Value::String(current)) if current != before && current == target_locale => {
+            *current = before.to_string();
+        }
+        _ => return Ok(reconstruction),
+    }
+    Ok(Reconstruction {
+        bytes: serde_json::to_vec(&json).map_err(|error| invalid(error.to_string()))?,
+        provenance: Provenance::Reconstructed,
+        drift: reconstruction.drift,
+    })
+}
+
+/// Same original: byte-identical, or equal once parsed as JSON (a rebuilt
+/// file is re-serialized compactly, an untouched one keeps its formatting).
+pub fn same_content(left: &[u8], right: &[u8]) -> bool {
+    if left == right {
+        return true;
+    }
+    match (
+        serde_json::from_slice::<Value>(left),
+        serde_json::from_slice::<Value>(right),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 /// One translated `plugins.js` parameter, as recorded in the project.
@@ -624,6 +708,68 @@ mod tests {
         assert_eq!(rec.provenance, Provenance::Reconstructed);
         assert!(rec.drift.is_empty());
         assert_eq!(String::from_utf8(rec.bytes).unwrap(), original);
+    }
+
+    #[test]
+    fn known_disk_checksums_are_bounded_and_reset_by_a_new_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SnapshotStore::open(dir.path().to_path_buf()).unwrap();
+        store
+            .put("data/A.json", b"{}", Provenance::Pristine, vec![])
+            .unwrap();
+        assert!(store.is_known_disk("data/A.json", &sha256_hex(b"{}")));
+        for index in 0..=KNOWN_DISK_LIMIT {
+            store.remember_disk("data/A.json", &format!("export-{index}"));
+        }
+        assert!(!store.is_known_disk("data/A.json", "export-0"));
+        assert!(store.is_known_disk("data/A.json", "export-1"));
+        store.save().unwrap();
+
+        let mut reopened = SnapshotStore::open(dir.path().to_path_buf()).unwrap();
+        assert!(reopened.is_known_disk("data/A.json", "export-1"));
+        reopened
+            .put("data/A.json", br#"{"v":2}"#, Provenance::Pristine, vec![])
+            .unwrap();
+        assert!(!reopened.is_known_disk("data/A.json", "export-1"));
+        assert!(!reopened.is_known_disk("data/Missing.json", "export-1"));
+    }
+
+    #[test]
+    fn locale_switch_is_reverted_only_when_it_is_the_export_target() {
+        let snapshot = br#"{"locale":"ja_JP","gameTitle":"T"}"#;
+        let rebuilt = |disk: &str| Reconstruction {
+            bytes: disk.as_bytes().to_vec(),
+            provenance: Provenance::Pristine,
+            drift: vec![],
+        };
+        let ours = revert_locale_switch(
+            "System.json",
+            rebuilt(r#"{"locale":"en_US","gameTitle":"T"}"#),
+            snapshot,
+            "en_US",
+        )
+        .unwrap();
+        assert!(same_content(&ours.bytes, snapshot));
+        // Any other language is the game's own change: kept.
+        let theirs = revert_locale_switch(
+            "System.json",
+            rebuilt(r#"{"locale":"zh_CN","gameTitle":"T"}"#),
+            snapshot,
+            "en_US",
+        )
+        .unwrap();
+        assert!(!same_content(&theirs.bytes, snapshot));
+    }
+
+    #[test]
+    fn same_content_ignores_json_formatting_but_not_values() {
+        assert!(same_content(
+            b"[\nnull,\n{\"a\":1}\n]",
+            br#"[null,{"a":1}]"#
+        ));
+        assert!(same_content(br#"{"a":1,"b":2}"#, br#"{"b":2,"a":1}"#));
+        assert!(!same_content(br#"{"a":1}"#, br#"{"a":2}"#));
+        assert!(!same_content(b"var x = 1;", b"var x = 1; "));
     }
 
     #[test]

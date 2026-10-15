@@ -464,7 +464,9 @@ pub fn generate_qa_html(
     for d in details {
         for e in &d.errors {
             match e {
-                QaError::MissingPlaceholder { .. } => count_missing_ph += 1,
+                QaError::MissingPlaceholder { .. } | QaError::MissingFormatSpecifier { .. } => {
+                    count_missing_ph += 1
+                }
                 QaError::LineTooLong { .. } => count_line_long += 1,
                 QaError::BomDetected => count_bom += 1,
                 QaError::TerminologyMismatch { .. } => count_terminology += 1,

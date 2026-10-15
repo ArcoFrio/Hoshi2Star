@@ -3,7 +3,9 @@
 //! `scan_text_coverage` reports every optional category with its safety state
 //! and consequences; `set_text_categories` applies the user's decisions. The
 //! scan always runs on the pristine snapshot, and `set_text_categories`
-//! re-scans server-side instead of trusting what the UI displayed.
+//! re-scans server-side instead of trusting what the UI displayed. Nothing is
+//! ever enabled without the user: `get_text_coverage_status` only tells the UI
+//! whether to offer the review.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,7 +38,7 @@ pub struct CategoryView {
     pub state: CategoryState,
     /// Current decision (segments exist exactly when `true`).
     pub enabled: bool,
-    /// Whether the user (or the post-open default) ever decided.
+    /// Whether the user ever decided.
     pub decided: bool,
     pub default_enabled: bool,
     pub visible_in: String,
@@ -83,6 +85,38 @@ pub struct CategoryChange {
     /// Required to enable a `linked` category: the user confirmed its consequences.
     #[serde(default)]
     pub accept_consequences: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverageStatus {
+    /// `false` for engines without optional categories (Wolf, VX Ace).
+    pub supported: bool,
+    pub has_decisions: bool,
+}
+
+/// Whether optional categories apply to a project and were ever decided,
+/// without scanning (a scan may have to snapshot the whole game first).
+#[tauri::command]
+pub async fn get_text_coverage_status(
+    project_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<CoverageStatus, String> {
+    let engine: String = sqlx::query_scalar("SELECT engine FROM projects WHERE id = ?")
+        .bind(&project_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|error| error.to_string())?;
+    let decisions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM project_text_categories WHERE project_id = ?")
+            .bind(&project_id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(CoverageStatus {
+        supported: engine == "mv_mz",
+        has_decisions: decisions > 0,
+    })
 }
 
 /// Report every optional text category of an MV/MZ project.
@@ -157,7 +191,7 @@ pub async fn scan_project(
         return Ok(None);
     }
 
-    let mut store = originals::ensure_mv_mz_snapshot(db, data_dir, project_id).await?;
+    let mut store = originals::ensure_fresh_mv_mz_snapshot(db, data_dir, project_id).await?;
     let files: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT file_name, file_path, file_type FROM source_files WHERE project_id = ?",
     )
@@ -251,11 +285,10 @@ pub(crate) fn enabled_plugin_sources(js_dir: &Path, plugins_text: &str) -> Vec<(
     };
     let mut sources = Vec::new();
     for entry in plugins.entries().iter().filter(|entry| entry.status) {
-        let mut path = js_dir.join("plugins");
-        for part in entry.name.split('/') {
-            path.push(part);
-        }
-        path.set_extension("js");
+        let Some(path) = plugin_script_path(js_dir, &entry.name) else {
+            log::warn!("ignoring plugin with an unsafe name: {:?}", entry.name);
+            continue;
+        };
         if let Ok(source) = std::fs::read(&path) {
             sources.push((
                 entry.name.clone(),
@@ -264,6 +297,24 @@ pub(crate) fn enabled_plugin_sources(js_dir: &Path, plugins_text: &str) -> Vec<(
         }
     }
     sources
+}
+
+/// `js/plugins/<name>.js`, like the engine's `PluginManager.loadScript`
+/// (subfolders allowed). `None` for a name that could leave `js/plugins`:
+/// `plugins.js` comes from the game folder and is not trusted.
+fn plugin_script_path(js_dir: &Path, name: &str) -> Option<PathBuf> {
+    let mut path = js_dir.join("plugins");
+    for part in name.split('/') {
+        let safe =
+            !part.is_empty() && part != "." && part != ".." && !part.contains(['\\', ':', '\0']);
+        if !safe {
+            return None;
+        }
+        path.push(part);
+    }
+    let mut file = path.into_os_string();
+    file.push(".js");
+    Some(PathBuf::from(file))
 }
 
 async fn build_view(
@@ -562,4 +613,35 @@ async fn disable_category(
     .await
     .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plugin_script_paths_stay_inside_js_plugins() {
+        let js = Path::new("game").join("js");
+        assert_eq!(
+            plugin_script_path(&js, "nuun/NUUN_EnemyBook"),
+            Some(js.join("plugins").join("nuun").join("NUUN_EnemyBook.js"))
+        );
+        // A dot in the name is part of it, not an extension to replace.
+        assert_eq!(
+            plugin_script_path(&js, "Foo.v2"),
+            Some(js.join("plugins").join("Foo.v2.js"))
+        );
+        for bad in [
+            "../../secret",
+            "a/../../b",
+            "/abs",
+            "C:/x",
+            r"..\..\x",
+            "a//b",
+            ".",
+            "",
+        ] {
+            assert_eq!(plugin_script_path(&js, bad), None, "{bad}");
+        }
+    }
 }

@@ -29,13 +29,19 @@ pour l'extraction de base.
 
 | État | Signification | Activation |
 |---|---|---|
-| **Verified** | Profil vérifié + aucune référence par nom ailleurs | Par défaut (post-open), décochable |
+| **Verified** | Profil vérifié + aucune référence par nom ailleurs | Opt-in, pré-cochée dans le dialogue |
 | **Linked** | Référencé par nom, mais Hoshi2Star sait réécrire *toutes* les références | Opt-in, confirmation des conséquences (`accept_consequences`) |
 | **Blocked** | Référence non couverte, ou champ identifiant | Jamais ; raison + emplacements affichés |
 | **Not covered** | Plugin sans profil vérifié | Rapport seulement (indices statiques, jamais extrait) |
 
 Le scan tourne toujours sur les **originaux vierges** et `set_text_categories` re-scanne côté Rust
 (l'UI n'est jamais crue sur parole).
+
+Rien n'est activé sans l'utilisateur. Après une extraction neuve, le scan (le snapshot vient d'être
+pris) propose seulement une notification « Examiner » s'il existe une catégorie activable. Un projet
+restauré n'est **pas** scanné à l'ouverture, car le scan pourrait devoir snapshotter tout le jeu.
+`get_text_coverage_status` (sans scan) indique si une décision existe déjà ; sinon la même
+notification est proposée.
 
 ### Sites de référence scannés
 
@@ -51,8 +57,12 @@ avertissements non bloquants dans le dialogue de couverture.
 ## Profils de plugins
 
 TOML embarqués (`src-tauri/profiles/mv_mz/*.toml`, `deny_unknown_fields`), épinglés par
-`verified_versions` (`@version` du source) ou `verified_sha256` (SHA-256 du source, CRLF → LF).
-Version différente, plugin désactivé ou source illisible ⇒ rapport seulement.
+`verified_sha256` (SHA-256 du source, CRLF → LF). Le format accepte aussi `verified_versions`
+(`@version` du source). Les profils livrés n'utilisent que le hash, car une copie modifiée garde
+le même en-tête (vérifié par `embedded_profiles_are_valid`). Source différente, plugin désactivé
+ou source illisible ⇒ rapport seulement. Les noms de plugins de `plugins.js` (dossier du jeu, non
+fiable) contenant `..`, `\`, `:` ou un segment vide sont ignorés avant toute lecture de
+`js/plugins/`.
 
 | Règle | Rôle |
 |---|---|
@@ -90,11 +100,25 @@ un NOM contenant un chiffre **n'importe où** est un id de compétence, sinon
 
 ## Originaux vierges et export idempotent
 
-À l'ouverture, chaque fichier modifiable est copié dans `<app-data>/originals/<project_id>/`
-(+ `snapshot.json` : SHA-256, provenance). Si le dossier du jeu contient déjà un export, les
-originaux sont **reconstruits** depuis la base (valeur ∈ {source, cible, `\FS[n]`+cible} ⇒ source ;
-sinon fichier marqué *drifted*). Tous les exports MV/MZ et `debug_inject_file` lisent le snapshot :
+À l'extraction, chaque fichier modifiable est copié dans `<app-data>/originals/<project_id>/`
+(+ `snapshot.json` : SHA-256, provenance). Un projet restauré est snapshotté à la demande (export,
+dialogue de couverture). Si le dossier du jeu contient déjà un export, les originaux sont
+**reconstruits** depuis la base (valeur ∈ {source, cible, `\FS[n]`+cible} ⇒ source ; sinon
+fichier marqué *drifted*). Tous les exports MV/MZ et `debug_inject_file` lisent le snapshot :
 exporter deux fois donne deux archives identiques, même après dézippage par-dessus `data/`.
+
+Le `project_id` vient de `.hoshi2star.json` (dossier du jeu, non fiable) et devient un nom de
+dossier. `snapshot_root` refuse donc tout ce qui n'est pas un UUID, et `open_project` ignore un id
+de manifeste malformé.
+
+**Mise à jour du jeu.** Chaque entrée garde aussi `knownDisk`, les SHA-256 des versions du dossier
+du jeu connues pour lui correspondre : le disque à la capture et chaque fichier exporté (zip ou
+`debug_inject_file`), au plus 16. Export, preflight et dialogue de couverture appellent
+`ensure_fresh_mv_mz_snapshot`. Un fichier du jeu dont le hash est inconnu est reconstruit comme à
+la première capture, puis comparé au snapshot (JSON comparé après parsing ; un `locale` égal à la
+cible d'export est remis à sa valeur d'origine). S'il est identique, c'était un export plus ancien
+et son hash est retenu. Sinon le jeu a changé : le snapshot prend la nouvelle version. Un export ne
+ramène donc jamais une ancienne version du jeu.
 
 `plugins.js` est édité par chirurgie d'intervalles (JSON dans des chaînes compris) : seuls les
 octets des valeurs traduites changent.
@@ -124,7 +148,9 @@ même si System.json n'a rien d'autre à exporter.
 `TokEngine::for_segment` choisit la syntaxe par segment : `MzOnly` (protège `%1`) pour
 `system_term` et les contextes `{"placeholderSyntax":"format"}` (templates de plugins). Utilisé par
 le pipeline, la QA, le rapport et le dédoublonnage de batch (`DedupKey.placeholder_syntax`).
-⚠️ Conséquence : une cible `system_term` qui a perdu un `%n` bloque désormais l'export.
+Un `%n` perdu dans une cible `system_term` ou un template donne `MissingFormatSpecifier`, un
+avertissement (−15) qui ne bloque pas l'export : le jeu affiche le message sans la valeur. Les codes
+d'échappement perdus restent `MissingPlaceholder` (critique).
 
 Règles `ConstraintViolation` : `plain_text_value` (critique), `no_escape_codes` (cosmétique),
 `keke_skill_type` / `keke_skill_type_unique` / `keke_tag_field` (critiques), `keke_no_spaces` (cosmétique).

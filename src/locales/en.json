@@ -198,6 +198,7 @@
     "empty": "Empty translation",
     "qaError": {
       "missing_placeholder": "Missing code",
+      "missing_format_specifier": "Missing value",
       "line_too_long": "Line too long",
       "bom_detected": "BOM detected",
       "terminology_mismatch": "Terminology mismatch"
@@ -307,6 +308,7 @@
     "exportError": "Export failed: {{error}}",
     "errors": {
       "missing_placeholder": "Missing placeholder: {{name}}",
+      "missing_format_specifier": "Missing value {{name}}: the game shows the message without it",
       "line_too_long": "Line {{line}} too wide ({{units}} / {{maxUnits}} units — {{chars}} chars)",
       "bom_detected": "UTF-8 BOM detected at start of target",
       "empty_translation": "The translation is empty",
@@ -634,7 +636,9 @@
     "linkedConfirmDesc": "These categories change other game data in the same export. Review the consequences below.",
     "linkedConfirmCancel": "Cancel",
     "linkedConfirmAccept": "I understand, enable",
-    "autoEnabled": "{{count}} additional player-visible texts added (see Text coverage)",
+    "available": "{{count}} optional text categories (plugin & system UI text) can be translated safely. Nothing was enabled.",
+    "undecided": "Optional plugin & system UI text can be reviewed for translation in Text coverage.",
+    "reviewAction": "Review",
     "scanFailed": "Could not scan for additional text: {{error}}",
     "notCoveredTitle": "Plugin text not covered ({{count}})",
     "notCoveredHint": "These plugin settings contain text, but no verified profile proves they are display-only, so they stay untranslated. A hint is a guess from the plugin code, never a guarantee.",

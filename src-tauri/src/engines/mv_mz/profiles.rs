@@ -429,6 +429,15 @@ mod tests {
             ProfileSet::parse_all(EMBEDDED).expect("embedded profiles must parse and validate");
         assert_eq!(set.len(), EMBEDDED.len());
         assert!(set.find("nuun/NUUN_EnemyBook").is_some());
+        // Shipped profiles pin the exact reviewed source: a `@version` header
+        // alone also matches edited copies of the plugin.
+        for profile in &set.profiles {
+            assert!(
+                !profile.plugin.verified_sha256.is_empty(),
+                "{} is not pinned by sha256",
+                profile.plugin.name
+            );
+        }
     }
 
     #[test]

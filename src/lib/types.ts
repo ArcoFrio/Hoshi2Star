@@ -179,7 +179,8 @@ export type QaErrorType =
       expected_targets: string[];
       severity: "critical" | "warning" | "info";
     }
-  | { type: "constraint_violation"; rule: string };
+  | { type: "constraint_violation"; rule: string }
+  | { type: "missing_format_specifier"; placeholder: string };
 
 export interface QaResult {
   score: number;
@@ -523,6 +524,12 @@ export interface PilotRunReport {
 // ---------------------------------------------------------------------------
 
 export type CategoryState = "verified" | "linked" | "blocked";
+
+/** `get_text_coverage_status`: answered without scanning the game. */
+export interface CoverageStatus {
+  supported: boolean;
+  hasDecisions: boolean;
+}
 export type CategoryGroup =
   | "system"
   | "map"

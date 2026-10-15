@@ -18,7 +18,7 @@ use crate::{
             coverage::plugins::{context_is_fill_in, for_each_command, PLUGINS_FILE_NAME},
             injector, integrity, keke,
             locale::{self, LocaleUse},
-            originals::SnapshotStore,
+            originals::{sha256_hex, SnapshotStore},
             plugins_js::{parse_plugin_key, PluginsJs},
         },
         vx_ace::injector as vx_injector,
@@ -305,9 +305,10 @@ pub async fn export_project(
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
 
     // MV/MZ exports always start from the pristine originals, never from the
-    // game folder (which may already hold a previous export).
-    let snapshot = if engine == "mv_mz" {
-        Some(originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &project_id).await?)
+    // game folder (which may already hold a previous export, or a game update
+    // the snapshot then follows).
+    let mut snapshot = if engine == "mv_mz" {
+        Some(originals::ensure_fresh_mv_mz_snapshot(&state.db, &state.data_dir, &project_id).await?)
     } else {
         None
     };
@@ -470,8 +471,16 @@ pub async fn export_project(
         ));
     }
 
+    let written: Vec<(String, String)> = entries
+        .iter()
+        .map(|(rel, bytes)| (rel.clone(), sha256_hex(bytes)))
+        .collect();
     let zip_path = game_dir.join("hoshi2star.zip");
     write_zip(&zip_path, entries)?;
+    // Users unzip the archive over the game: those files are ours, not an update.
+    if let Some(store) = snapshot.as_mut() {
+        originals::remember_written(store, &written);
+    }
     Ok(zip_path.to_string_lossy().into_owned())
 }
 
@@ -513,7 +522,8 @@ pub async fn preflight_export(
     if engine != "mv_mz" {
         return Ok(ExportPreflight { locale: None });
     }
-    let store = originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &project_id).await?;
+    let store =
+        originals::ensure_fresh_mv_mz_snapshot(&state.db, &state.data_dir, &project_id).await?;
     let files = sqlx::query_as::<_, SourceFile>(
         "SELECT id, project_id, file_name, file_path, file_type, translation_secs \
          FROM source_files WHERE project_id = ?",
@@ -1042,10 +1052,14 @@ pub async fn debug_inject_file(
         }
         FileClass::Json => {
             let rel = originals::game_relative_path(&game_path, &file.file_path, &file.file_name);
-            let snapshot = if engine == "mv_mz" {
+            let mut snapshot = if engine == "mv_mz" {
                 Some(
-                    originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &file.project_id)
-                        .await?,
+                    originals::ensure_fresh_mv_mz_snapshot(
+                        &state.db,
+                        &state.data_dir,
+                        &file.project_id,
+                    )
+                    .await?,
                 )
             } else {
                 None
@@ -1068,15 +1082,22 @@ pub async fn debug_inject_file(
             if !issues.is_empty() {
                 return Err(integrity::summarize(&issues));
             }
+            let written = [(rel, sha256_hex(&out))];
             std::fs::write(&file.file_path, out)
                 .map_err(|e| format!("write {}: {e}", file.file_name))?;
+            if let Some(store) = snapshot.as_mut() {
+                originals::remember_written(store, &written);
+            }
             Ok(file.file_path.clone())
         }
         FileClass::PluginsJs => {
             let rel = originals::game_relative_path(&game_path, &file.file_path, &file.file_name);
-            let snapshot =
-                originals::ensure_mv_mz_snapshot(&state.db, &state.data_dir, &file.project_id)
-                    .await?;
+            let mut snapshot = originals::ensure_fresh_mv_mz_snapshot(
+                &state.db,
+                &state.data_dir,
+                &file.project_id,
+            )
+            .await?;
             let raw = read_original_json(Some(&snapshot), &rel, &file)?;
             let rows = plugin_rows(&state.db, &file.id).await?;
             let (output, planned) = build_plugins_js(&raw, &rows)?;
@@ -1084,8 +1105,10 @@ pub async fn debug_inject_file(
             if !issues.is_empty() {
                 return Err(integrity::summarize(&issues));
             }
+            let written = [(rel, sha256_hex(output.as_bytes()))];
             std::fs::write(&file.file_path, output)
                 .map_err(|e| format!("write {}: {e}", file.file_name))?;
+            originals::remember_written(&mut snapshot, &written);
             Ok(file.file_path.clone())
         }
     }

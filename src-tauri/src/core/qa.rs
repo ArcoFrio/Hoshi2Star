@@ -135,6 +135,12 @@ pub enum QaError {
     ConstraintViolation {
         rule: String,
     },
+    /// A `%n` of a format template (System term, plugin message) is missing:
+    /// the game shows the message without that value. Unlike a lost escape
+    /// code it cannot break anything, so it never blocks an export.
+    MissingFormatSpecifier {
+        placeholder: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,8 +393,11 @@ fn check_with_rules(
     let mut seen: HashSet<&str> = HashSet::new();
     for original in tokenized.map.values() {
         if seen.insert(original.as_str()) && !target.contains(original.as_str()) {
-            errors.push(QaError::MissingPlaceholder {
-                placeholder: original.clone(),
+            let placeholder = original.clone();
+            errors.push(if is_format_specifier(original) {
+                QaError::MissingFormatSpecifier { placeholder }
+            } else {
+                QaError::MissingPlaceholder { placeholder }
             });
         }
     }
@@ -509,6 +518,14 @@ fn shares_word_sequence(left: &str, right: &str, minimum_words: usize) -> bool {
     })
 }
 
+/// Bare `%1`, `%2`… — only tokenized for format templates
+/// (see [`TokEngine::for_segment`]).
+fn is_format_specifier(placeholder: &str) -> bool {
+    placeholder
+        .strip_prefix('%')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Constraint names written by MV/MZ text categories in `context_json`.
 const CONSTRAINT_PLAIN_TEXT: &str = "plain_text_value";
 const CONSTRAINT_NO_ESCAPES: &str = "no_escape_codes";
@@ -626,6 +643,7 @@ impl QaError {
             QaError::ContextLeak { .. } => 60,
             QaError::InconsistentRepeatedSource { .. } => 50,
             QaError::MissingPlaceholder { .. } => 25,
+            QaError::MissingFormatSpecifier { .. } => 15,
             QaError::LineTooLong { .. } => 10,
             QaError::BomDetected => 15,
             QaError::TerminologyMismatch { severity, .. } => match severity {
@@ -653,6 +671,7 @@ impl QaError {
             QaError::ContextLeak { .. } => "context_leak",
             QaError::InconsistentRepeatedSource { .. } => "inconsistent_repeated_source",
             QaError::MissingPlaceholder { .. } => "missing_placeholder",
+            QaError::MissingFormatSpecifier { .. } => "missing_format_specifier",
             QaError::LineTooLong { .. } => "line_too_long",
             QaError::BomDetected => "bom_detected",
             QaError::TerminologyMismatch { .. } => "terminology_mismatch",
@@ -716,6 +735,9 @@ impl QaError {
             }
             QaError::MissingPlaceholder { placeholder } => {
                 format!("Missing placeholder: {placeholder}")
+            }
+            QaError::MissingFormatSpecifier { placeholder } => {
+                format!("Missing value {placeholder}: the game shows the message without it")
             }
             QaError::LineTooLong {
                 line,
@@ -787,6 +809,9 @@ impl QaError {
             }
             QaError::MissingPlaceholder { placeholder } => {
                 format!("Placeholder manquant : {placeholder}")
+            }
+            QaError::MissingFormatSpecifier { placeholder } => {
+                format!("Valeur {placeholder} manquante : le jeu affiche le message sans elle")
             }
             QaError::LineTooLong {
                 line,
@@ -1190,7 +1215,8 @@ mod tests {
 
     #[test]
     fn format_specifiers_are_protected_only_where_the_engine_formats_them() {
-        // System terms: a dropped %1 breaks the battle message → critical.
+        // System terms: a dropped %2 loses the damage value from the battle
+        // message → reported, as a warning.
         let term = check_with_context(
             "%1は%2のダメージを受けた！",
             "%1 took damage!",
@@ -1198,9 +1224,9 @@ mod tests {
             "mv_mz",
             &semantic_context("system_term", &[]),
         );
-        assert!(term.has_critical_errors());
+        assert!(!term.has_critical_errors());
         assert!(term.errors.iter().any(
-            |e| matches!(e, QaError::MissingPlaceholder { placeholder } if placeholder == "%2")
+            |e| matches!(e, QaError::MissingFormatSpecifier { placeholder } if placeholder == "%2")
         ));
 
         // Plugin templates opt in through context_json.
@@ -1215,7 +1241,12 @@ mod tests {
             "mv_mz",
             &template_context,
         );
-        assert!(template.has_critical_errors());
+        // A lost `%n` only drops a value from the message: a warning.
+        assert!(matches!(
+            template.errors.as_slice(),
+            [QaError::MissingFormatSpecifier { placeholder }] if placeholder == "%1"
+        ));
+        assert!(!template.has_critical_errors());
 
         // Dialogue: bare %1 is ordinary text, not a placeholder.
         let dialogue = check_with_context(
@@ -1225,14 +1256,18 @@ mod tests {
             "mv_mz",
             &semantic_context("dialogue", &[]),
         );
-        assert!(!dialogue
-            .errors
-            .iter()
-            .any(|e| matches!(e, QaError::MissingPlaceholder { .. })));
+        assert!(!dialogue.errors.iter().any(|e| matches!(
+            e,
+            QaError::MissingPlaceholder { .. } | QaError::MissingFormatSpecifier { .. }
+        )));
 
         // Persisted-segment entry point used by the editor applies the same rule.
         let edited = check_segment("%1の攻撃！", "Attack!", &[], "mv_mz", "system_term", None);
-        assert!(edited.has_critical_errors());
+        assert!(matches!(
+            edited.errors.as_slice(),
+            [QaError::MissingFormatSpecifier { placeholder }] if placeholder == "%1"
+        ));
+        assert!(!edited.has_critical_errors());
     }
 
     #[test]

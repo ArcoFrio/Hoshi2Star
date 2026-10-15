@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { CategoryChange, CoverageView } from "@/lib/types";
+import type {
+  CategoryChange,
+  CoverageStatus,
+  CoverageView,
+} from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Optional text coverage (MV/MZ plugin & system UI text)
@@ -58,45 +62,40 @@ export async function applyCoverageChanges(
   }
 }
 
-/** Outcome of the post-open step, used for the user-facing toast. */
+/** Outcome of the post-open step, used for the user-facing notice. */
 export type PostOpenCoverage =
   | { kind: "none" }
-  | { kind: "enabled"; segments: number }
-  | { kind: "review" };
+  /** Fresh extraction: this many categories can be enabled safely. */
+  | { kind: "available"; categories: number }
+  /** Restored project that never decided (not scanned). */
+  | { kind: "undecided" };
 
 /**
- * After opening an MV/MZ project:
- * - fresh extraction → enable every *verified* category silently (they are
- *   display-only and referenced nowhere);
- * - restored project that never decided → open the dialog so the user reviews
- *   the newly available categories (nothing is enabled behind their back).
+ * After opening an MV/MZ project, decide whether to offer the coverage
+ * review. Nothing is ever enabled here: the user decides in the dialog.
+ * - fresh extraction → scan (its snapshot was just taken) and offer the
+ *   review only when some category can be enabled;
+ * - restored project → no scan (it could snapshot the whole game on opening);
+ *   offer the review while no decision was ever recorded.
  */
 export async function applyPostOpenCoverage(
   projectId: string,
   wasRestored: boolean,
 ): Promise<PostOpenCoverage> {
-  const view = await invoke<CoverageView>("scan_text_coverage", { projectId });
-  if (!view.supported || view.hasDecisions || view.categories.length === 0) {
-    return { kind: "none" };
-  }
   if (wasRestored) {
-    useCoverageStore.setState({ view, open: true, error: null });
-    return { kind: "review" };
+    const status = await invoke<CoverageStatus>("get_text_coverage_status", {
+      projectId,
+    });
+    return status.supported && !status.hasDecisions
+      ? { kind: "undecided" }
+      : { kind: "none" };
   }
-  const defaults = view.categories.filter(
-    (category) => category.state === "verified" && category.defaultEnabled,
-  );
-  if (defaults.length === 0) return { kind: "none" };
-  const applied = await invoke<CoverageView>("set_text_categories", {
-    projectId,
-    changes: defaults.map((category) => ({
-      categoryKey: category.key,
-      enabled: true,
-    })),
-  });
-  useCoverageStore.setState({ view: applied });
-  return {
-    kind: "enabled",
-    segments: defaults.reduce((sum, category) => sum + category.segmentCount, 0),
-  };
+  const view = await invoke<CoverageView>("scan_text_coverage", { projectId });
+  if (!view.supported || view.hasDecisions) return { kind: "none" };
+  const offered = view.categories.filter(
+    (category) => category.state !== "blocked",
+  ).length;
+  return offered > 0
+    ? { kind: "available", categories: offered }
+    : { kind: "none" };
 }

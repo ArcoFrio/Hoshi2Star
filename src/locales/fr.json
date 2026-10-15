@@ -198,6 +198,7 @@
     "empty": "Traduction vide",
     "qaError": {
       "missing_placeholder": "Code manquant",
+      "missing_format_specifier": "Valeur manquante",
       "line_too_long": "Ligne trop longue",
       "bom_detected": "BOM détecté",
       "terminology_mismatch": "Terminologie non respectée"
@@ -307,6 +308,7 @@
     "exportError": "Échec de l'export : {{error}}",
     "errors": {
       "missing_placeholder": "Placeholder manquant : {{name}}",
+      "missing_format_specifier": "Valeur {{name}} manquante : le jeu affiche le message sans elle",
       "line_too_long": "Ligne {{line}} trop large ({{units}} / {{maxUnits}} unités — {{chars}} caractères)",
       "bom_detected": "BOM UTF-8 détecté en début de cible",
       "empty_translation": "La traduction est vide",
@@ -634,7 +636,9 @@
     "linkedConfirmDesc": "Ces catégories modifient d'autres données du jeu dans le même export. Lisez les conséquences ci-dessous.",
     "linkedConfirmCancel": "Annuler",
     "linkedConfirmAccept": "J'ai compris, activer",
-    "autoEnabled": "{{count}} textes supplémentaires visibles par le joueur ajoutés (voir Couverture du texte)",
+    "available": "{{count}} catégories de texte optionnelles (texte de plugins et de l'interface système) peuvent être traduites sans risque. Rien n'a été activé.",
+    "undecided": "Le texte optionnel des plugins et de l'interface système peut être examiné pour la traduction dans Couverture du texte.",
+    "reviewAction": "Examiner",
     "scanFailed": "Impossible d'analyser le texte supplémentaire : {{error}}",
     "notCoveredTitle": "Texte de plugin non couvert ({{count}})",
     "notCoveredHint": "Ces paramètres de plugin contiennent du texte, mais aucun profil vérifié ne prouve qu'ils servent seulement à l'affichage : ils restent non traduits. Un indice est une supposition tirée du code du plugin, jamais une garantie.",

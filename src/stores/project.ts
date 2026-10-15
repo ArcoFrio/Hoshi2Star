@@ -8,7 +8,7 @@ import type {
   ProjectStats,
   SourceFile,
 } from "@/lib/types";
-import { applyPostOpenCoverage } from "@/stores/coverage";
+import { applyPostOpenCoverage, openCoverageDialog } from "@/stores/coverage";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStore } from "@/stores/ui";
 
@@ -129,12 +129,23 @@ export async function openProject(
   }
 
   if (project.engine === "mv_mz") {
-    // Optional plugin/system text: best-effort, never blocks opening.
+    // Optional plugin/system text: offered, never enabled behind the user's
+    // back. Best-effort, never blocks opening.
     try {
       const outcome = await applyPostOpenCoverage(project.id, wasRestored);
-      if (outcome.kind === "enabled") {
-        await refreshProjectData(project.id);
-        toast.success(t("coverage.autoEnabled", { count: outcome.segments }));
+      if (outcome.kind !== "none") {
+        toast.info(
+          outcome.kind === "available"
+            ? t("coverage.available", { count: outcome.categories })
+            : t("coverage.undecided"),
+          {
+            duration: 15000,
+            action: {
+              label: t("coverage.reviewAction"),
+              onClick: () => void openCoverageDialog(project.id),
+            },
+          },
+        );
       }
     } catch (err) {
       toast.warning(t("coverage.scanFailed", { error: String(err) }));
