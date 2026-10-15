@@ -1,5 +1,22 @@
 # Tasks — Hoshi2Star
 
+## Installation BMAD pour Codex et Claude — 2026-09-21
+
+Périmètre : module principal BMM, intégrations locales Codex et Claude Code,
+français, conservation des skills et du suivi partagé. Aucun code applicatif.
+
+- [x] Vérifier les prérequis et la version stable officielle : BMAD 6.12.0.
+- [x] Vérifier les options de l'installateur et les deux intégrations disponibles.
+- [x] Installer BMM pour les deux outils dans ce dépôt.
+- [x] Vérifier les fichiers installés et la préservation de l'existant.
+- [x] Actualiser le point de reprise et consigner les commandes d'utilisation.
+
+Preuves et limites : `docs/journal/2026-09-21-installation-bmad.md`.
+Guide : `docs/bmad.md`. Découverte dans une nouvelle session de chaque outil
+encore à vérifier ; aucun workflow applicatif n'a été lancé.
+
+---
+
 ## 📋 PLAN — Recommandations issues des analyses concurrents (2026-07-14) — NON DÉMARRÉ
 
 > Synthèse actionnable des analyses SLR Translator v3.022 (2026-07-14) et
