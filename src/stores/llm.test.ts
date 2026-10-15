@@ -48,6 +48,7 @@ describe("llm store", () => {
       task: "translate" as const,
       model: "gemma4:e4b",
       inputUnits: 2,
+      terminologyHints: 1,
       promptChars: 500,
       promptTokens: 120,
       completionTokens: 17,
@@ -75,6 +76,8 @@ describe("llm store", () => {
       placeholderRetries: 1,
       recursiveSplits: 1,
       semanticRejections: 3,
+      semanticRetries: 2,
+      semanticRecoveries: 1,
     };
 
     useLlmStore.getState().appendPipelineMetrics(metrics);

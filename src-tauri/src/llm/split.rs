@@ -17,6 +17,7 @@ use std::pin::Pin;
 use crate::llm::provider::{LlmError, LlmProvider, TranslationContext};
 use crate::llm::tokenizer::{Tokenized, Tokenizer};
 use serde::Serialize;
+use sqlx::SqlitePool;
 
 pub(crate) const MAX_RETRIES: u32 = 3;
 
@@ -27,6 +28,8 @@ pub struct PipelineBatchMetrics {
     pub placeholder_retries: u32,
     pub recursive_splits: u32,
     pub semantic_rejections: u32,
+    pub semantic_retries: u32,
+    pub semantic_recoveries: u32,
 }
 
 impl PipelineBatchMetrics {
@@ -35,6 +38,8 @@ impl PipelineBatchMetrics {
         self.placeholder_retries += other.placeholder_retries;
         self.recursive_splits += other.recursive_splits;
         self.semantic_rejections += other.semantic_rejections;
+        self.semantic_retries += other.semantic_retries;
+        self.semantic_recoveries += other.semantic_recoveries;
     }
 }
 
@@ -55,6 +60,8 @@ pub(crate) fn llm_translate_with_split<'a, P>(
     tokenized: &'a [Tokenized],
     provider: &'a P,
     context: &'a TranslationContext,
+    db: &'a SqlitePool,
+    segment_ids: &'a [String],
 ) -> Pin<Box<dyn Future<Output = SplitOutcome> + Send + 'a>>
 where
     P: LlmProvider,
@@ -62,6 +69,26 @@ where
     Box::pin(async move {
         let texts_for_llm: Vec<String> =
             indices.iter().map(|&i| tokenized[i].text.clone()).collect();
+        let request_segment_ids = indices
+            .iter()
+            .filter_map(|&index| segment_ids.get(index).cloned())
+            .collect::<Vec<_>>();
+        let estimated_prompt_chars = 2_000
+            + texts_for_llm
+                .iter()
+                .map(|text| text.chars().count())
+                .sum::<usize>();
+        let terminology_hints = crate::core::terminology::resolver::resolve_for_request(
+            db,
+            &request_segment_ids,
+            &context.target_lang,
+            estimated_prompt_chars,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            log::warn!("failed to resolve terminology for provider request: {error}");
+            Vec::new()
+        });
 
         let mut attempt = 0u32;
         let mut metrics = PipelineBatchMetrics::default();
@@ -71,6 +98,7 @@ where
                 .iter()
                 .map(|&index| context.segment_contexts.get(index).cloned().unwrap_or(None))
                 .collect();
+            request_context.terminology_hints = terminology_hints.clone();
             let llm_result = provider
                 .translate(texts_for_llm.clone(), request_context)
                 .await;
@@ -89,10 +117,24 @@ where
                         let mid = indices.len() / 2;
                         let left = indices[..mid].to_vec();
                         let right = indices[mid..].to_vec();
-                        let left_outcome =
-                            llm_translate_with_split(left, tokenized, provider, context).await;
-                        let right_outcome =
-                            llm_translate_with_split(right, tokenized, provider, context).await;
+                        let left_outcome = llm_translate_with_split(
+                            left,
+                            tokenized,
+                            provider,
+                            context,
+                            db,
+                            segment_ids,
+                        )
+                        .await;
+                        let right_outcome = llm_translate_with_split(
+                            right,
+                            tokenized,
+                            provider,
+                            context,
+                            db,
+                            segment_ids,
+                        )
+                        .await;
                         metrics.merge(left_outcome.metrics);
                         metrics.merge(right_outcome.metrics);
                         let mut results = left_outcome.results;
@@ -144,10 +186,24 @@ where
                     let mid = indices.len() / 2;
                     let left = indices[..mid].to_vec();
                     let right = indices[mid..].to_vec();
-                    let left_outcome =
-                        llm_translate_with_split(left, tokenized, provider, context).await;
-                    let right_outcome =
-                        llm_translate_with_split(right, tokenized, provider, context).await;
+                    let left_outcome = llm_translate_with_split(
+                        left,
+                        tokenized,
+                        provider,
+                        context,
+                        db,
+                        segment_ids,
+                    )
+                    .await;
+                    let right_outcome = llm_translate_with_split(
+                        right,
+                        tokenized,
+                        provider,
+                        context,
+                        db,
+                        segment_ids,
+                    )
+                    .await;
                     metrics.merge(left_outcome.metrics);
                     metrics.merge(right_outcome.metrics);
                     let mut results = left_outcome.results;

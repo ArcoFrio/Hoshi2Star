@@ -6,9 +6,10 @@
 //! 3. Tokenize remaining segments (ADR-002: placeholders → ⟦ph_N⟧)
 //! 4. Send tokenized batch to the provider via `split::llm_translate_with_split`
 //! 5. Validate + restore placeholders; retry up to `MAX_RETRIES` times if invalid
-//! 6. Persist the batch's `target_text`/`status` to the DB immediately
+//! 6. Retry semantic QA failures as isolated singletons with bounded context
+//! 7. Persist the batch's `target_text`/`status` to the DB immediately
 //!    (incremental persistence — a crash mid-run only loses the in-flight batch)
-//! 7. Emit `h2s://llm/segments-updated` (the batch's persisted `target_text`/
+//! 8. Emit `h2s://llm/segments-updated` (the batch's persisted `target_text`/
 //!    `status`), `h2s://llm/progress`, and `h2s://llm/placeholder-warning`
 //!    (if an `AppHandle` was provided), and call `on_progress(done, total)`
 //! 8. If a `CooldownState` was provided, possibly `.await` a rest period
@@ -20,13 +21,14 @@
 //! Recursive batch-split logic lives in `split.rs`.
 //! Event payload types live in `progress.rs`.
 
-use crate::core::{qa, tm};
+use crate::core::{qa, terminology::resolver, tm};
 use crate::llm::batch;
 use crate::llm::context::{self, PromptContextClass};
 use crate::llm::progress::{
     CoolingPayload, PlaceholderWarningPayload, ProgressPayload, SegmentUpdatePayload,
 };
 use crate::llm::provider::{LlmError, LlmProvider, PromptContextPolicy, TranslationContext};
+use crate::llm::semantic_retry::{self, SemanticRetryRequest};
 use crate::llm::split::{llm_translate_with_split, PipelineBatchMetrics};
 use crate::llm::tokenizer::{Engine as TokEngine, Tokenizer};
 use serde::Serialize;
@@ -53,6 +55,12 @@ pub struct TranslationResult {
     pub needs_review: bool,
     pub qa_score: u8,
     pub qa_errors: Vec<qa::QaError>,
+}
+
+#[derive(Debug)]
+pub struct PipelineRunOutcome {
+    pub results: Vec<TranslationResult>,
+    pub metrics: PipelineBatchMetrics,
 }
 
 #[derive(Debug, Error)]
@@ -221,10 +229,41 @@ pub async fn run_inner<P, F>(
     context: TranslationContext,
     db: &SqlitePool,
     app_handle: Option<&tauri::AppHandle>,
+    cooldown: Option<&mut CooldownState>,
+    global_progress: Option<(usize, usize)>,
+    on_progress: F,
+) -> Result<Vec<TranslationResult>, PipelineError>
+where
+    P: LlmProvider,
+    F: FnMut(usize, usize),
+{
+    Ok(run_inner_with_metrics(
+        segments,
+        provider,
+        context,
+        db,
+        app_handle,
+        cooldown,
+        global_progress,
+        on_progress,
+    )
+    .await?
+    .results)
+}
+
+/// Variant of [`run_inner`] used by diagnostics and real-project pilots that
+/// need aggregate retry counters without depending on Tauri event listeners.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_inner_with_metrics<P, F>(
+    segments: Vec<(String, String)>,
+    provider: &P,
+    context: TranslationContext,
+    db: &SqlitePool,
+    app_handle: Option<&tauri::AppHandle>,
     mut cooldown: Option<&mut CooldownState>,
     global_progress: Option<(usize, usize)>,
     mut on_progress: F,
-) -> Result<Vec<TranslationResult>, PipelineError>
+) -> Result<PipelineRunOutcome, PipelineError>
 where
     P: LlmProvider,
     F: FnMut(usize, usize),
@@ -234,6 +273,7 @@ where
 
     let batch_size = context.batch_size.clamp(1, 100);
     let mut results = Vec::with_capacity(total);
+    let mut run_metrics = PipelineBatchMetrics::default();
     let mut done = 0usize;
 
     for batch_segments in segments.chunks(batch_size) {
@@ -251,6 +291,7 @@ where
         }
 
         let (batch_results, pipeline_metrics) = batch_outcome?;
+        run_metrics.merge(pipeline_metrics.clone());
 
         if let Some(handle) = app_handle {
             let _ = handle.emit("h2s://llm/pipeline-metrics", pipeline_metrics);
@@ -312,7 +353,10 @@ where
         }
     }
 
-    Ok(results)
+    Ok(PipelineRunOutcome {
+        results,
+        metrics: run_metrics,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -363,14 +407,19 @@ where
 {
     let batch_len = segments.len();
     let segment_ids: Vec<String> = segments.iter().map(|(id, _)| id.clone()).collect();
-    let prompt_contexts = match context.prompt_context_policy {
-        PromptContextPolicy::Disabled => vec![None; segment_ids.len()],
-        PromptContextPolicy::EngineOwned => {
-            context::build_for_segments(db, &context.engine, &segment_ids)
-                .await
-                .map_err(|error| PipelineError::Database(error.to_string()))?
-        }
-    };
+    let qa_rules = resolver::resolve_qa_rules_for_segments(db, &segment_ids, &context.target_lang)
+        .await
+        .map_err(|error| PipelineError::Database(error.to_string()))?;
+    let context_bundles = context::build_context_bundles(db, &context.engine, &segment_ids)
+        .await
+        .map_err(|error| PipelineError::Database(error.to_string()))?;
+    let prompt_contexts = context_bundles
+        .iter()
+        .map(|bundle| match context.prompt_context_policy {
+            PromptContextPolicy::Disabled => None,
+            PromptContextPolicy::EngineOwned => bundle.prompt.clone(),
+        })
+        .collect::<Vec<_>>();
     let (unique_segs, idx_map) = batch::dedup_with_context(segments, &prompt_contexts);
 
     // Translation table: (translated_text, from_tm, needs_review)
@@ -460,6 +509,10 @@ where
             .iter()
             .map(|&unique_idx| prompt_contexts[unique_segs[unique_idx].original_index].clone())
             .collect();
+        let request_segment_ids = to_translate
+            .iter()
+            .map(|&unique_idx| unique_segs[unique_idx].id.clone())
+            .collect::<Vec<_>>();
         // Never mix names/terms with dialogue in one prompt. Small contextual
         // groups reduce neighbour contamination and peak context size on local
         // models, while isolated database strings retain the configured limit.
@@ -503,6 +556,8 @@ where
                     &tokenized,
                     provider,
                     &request_context,
+                    db,
+                    &request_segment_ids,
                 )
                 .await;
                 pipeline_metrics.merge(outcome.metrics);
@@ -534,14 +589,10 @@ where
     // Build final Vec<TranslationResult> (same order as input `segments`)
     let mut results = Vec::with_capacity(segments.len());
     for (index, (id, source_text)) in segments.iter().enumerate() {
-        let (raw_target, from_tm, provider_needs_review) =
+        let (mut raw_target, from_tm, provider_needs_review) =
             translations[index].take().unwrap_or_default();
         let prompt_context = prompt_contexts.get(index).and_then(Option::as_ref);
-        let neighbor_sources: Vec<String> = prompt_context
-            .into_iter()
-            .flat_map(|value| value.previous.iter().chain(&value.following))
-            .map(|neighbor| neighbor.text.clone())
-            .collect();
+        let qa_neighbors = &context_bundles[index].qa_neighbors;
         let segment_kind = prompt_context
             .map(|value| value.segment_kind.as_str())
             .unwrap_or("unknown");
@@ -549,19 +600,52 @@ where
             source_language: &context.source_lang,
             target_language: &context.target_lang,
             segment_kind,
-            neighbor_sources: &neighbor_sources,
+            neighbor_sources: &qa_neighbors.sources,
+            neighbor_targets: &qa_neighbors.targets,
         };
-        let qa_result = qa::check_with_context(
+        let segment_rules = qa_rules.get(id).map(Vec::as_slice).unwrap_or(&[]);
+        let mut qa_result = qa::check_with_context(
             source_text,
             &raw_target,
-            &context.glossary_terms,
+            segment_rules,
             &context.engine,
             &qa_context,
         );
-        let needs_review = provider_needs_review || qa_result.has_critical_errors();
         if !provider_needs_review && qa_result.has_critical_errors() {
             pipeline_metrics.semantic_rejections += 1;
+            if !from_tm {
+                let tokenized = Tokenizer::tokenize(
+                    source_text,
+                    TokEngine::from_project_engine(&context.engine),
+                );
+                let retry = semantic_retry::retry(
+                    SemanticRetryRequest {
+                        source_text,
+                        tokenized: &tokenized,
+                        translation_context: context,
+                        segment_id: id,
+                        terminology_rules: segment_rules,
+                        prompt_context,
+                        qa_neighbors,
+                    },
+                    provider,
+                    db,
+                )
+                .await;
+                pipeline_metrics.merge(retry.metrics);
+                if let Some(recovered_target) = retry.recovered_target {
+                    raw_target = recovered_target;
+                    qa_result = qa::check_with_context(
+                        source_text,
+                        &raw_target,
+                        segment_rules,
+                        &context.engine,
+                        &qa_context,
+                    );
+                }
+            }
         }
+        let needs_review = provider_needs_review || qa_result.has_critical_errors();
         let translated_text = if raw_target.trim().is_empty() {
             source_text.clone()
         } else {
@@ -663,12 +747,49 @@ mod tests {
         TranslationContext {
             source_lang: "ja".to_string(),
             target_lang: "en".to_string(),
-            glossary_terms: vec![],
+            terminology_hints: vec![],
             engine: "mv_mz".to_string(),
             batch_size: DEFAULT_BATCH_SIZE,
             batch_delay_ms: 0,
             prompt_context_policy: PromptContextPolicy::EngineOwned,
             segment_contexts: vec![],
+        }
+    }
+
+    async fn insert_dialogue_scene(db: &SqlitePool) {
+        sqlx::query(
+            "INSERT INTO projects (id, name, engine, game_path) \
+             VALUES ('p1', 'Test', 'mv_mz', '/tmp')",
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO source_files (id, project_id, file_name, file_path, file_type) \
+             VALUES ('f1', 'p1', 'Map001.json', '/tmp/Map001.json', 'map')",
+        )
+        .execute(db)
+        .await
+        .unwrap();
+        for (id, sequence, text, speaker) in [
+            ("before", 0, "待って", Some("仲間")),
+            ("center", 1, "行こう", Some("勇者")),
+            ("after", 2, "はい", Some("仲間")),
+        ] {
+            sqlx::query(
+                "INSERT INTO segments \
+                 (id, source_file_id, json_key, source_text, segment_kind, scene_id, \
+                  sequence_index, speaker) \
+                 VALUES (?, 'f1', ?, ?, 'dialogue', 'Map001.json:event:1:page:0', ?, ?)",
+            )
+            .bind(id)
+            .bind(format!("/{id}"))
+            .bind(text)
+            .bind(sequence)
+            .bind(speaker)
+            .execute(db)
+            .await
+            .unwrap();
         }
     }
 
@@ -733,40 +854,7 @@ mod tests {
     #[tokio::test]
     async fn mv_mz_context_reaches_provider_with_bounded_neighbors() {
         let (db, _f) = test_db().await;
-        sqlx::query(
-            "INSERT INTO projects (id, name, engine, game_path) \
-             VALUES ('p1', 'Test', 'mv_mz', '/tmp')",
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO source_files (id, project_id, file_name, file_path, file_type) \
-             VALUES ('f1', 'p1', 'Map001.json', '/tmp/Map001.json', 'map')",
-        )
-        .execute(&db)
-        .await
-        .unwrap();
-        for (id, sequence, text, speaker) in [
-            ("before", 0, "待って", Some("仲間")),
-            ("center", 1, "行こう", Some("勇者")),
-            ("after", 2, "はい", Some("仲間")),
-        ] {
-            sqlx::query(
-                "INSERT INTO segments \
-                 (id, source_file_id, json_key, source_text, segment_kind, scene_id, \
-                  sequence_index, speaker) \
-                 VALUES (?, 'f1', ?, ?, 'dialogue', 'Map001.json:event:1:page:0', ?, ?)",
-            )
-            .bind(id)
-            .bind(format!("/{id}"))
-            .bind(text)
-            .bind(sequence)
-            .bind(speaker)
-            .execute(&db)
-            .await
-            .unwrap();
-        }
+        insert_dialogue_scene(&db).await;
         let provider = MockProvider::new(vec![Ok(vec!["Let's go".to_string()])]);
 
         run_inner(
@@ -788,6 +876,105 @@ mod tests {
         assert_eq!(prompt_context.speaker.as_deref(), Some("勇者"));
         assert_eq!(prompt_context.previous[0].text, "待って");
         assert_eq!(prompt_context.following[0].text, "はい");
+    }
+
+    #[tokio::test]
+    async fn semantic_failure_retries_singleton_without_neighbors() {
+        let (db, _f) = test_db().await;
+        insert_dialogue_scene(&db).await;
+        let contaminated = "Let's go. This output wrongly continues with a very long neighbouring conversation that does not belong to the source segment at all.";
+        let provider = MockProvider::new(vec![
+            Ok(vec![contaminated.to_string()]),
+            Ok(vec!["Let's go.".to_string()]),
+        ]);
+
+        let (results, metrics) = translate_batch(
+            &[("center".to_string(), "行こう".to_string())],
+            &provider,
+            &ctx(),
+            "ja-en",
+            &db,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(results[0].translated_text, "Let's go.");
+        assert!(!results[0].needs_review);
+        assert_eq!(metrics.semantic_rejections, 1);
+        assert_eq!(metrics.semantic_retries, 1);
+        assert_eq!(metrics.semantic_recoveries, 1);
+        let contexts = provider.contexts();
+        let retry = contexts[1].segment_contexts[0].as_ref().unwrap();
+        assert!(retry.previous.is_empty());
+        assert!(retry.following.is_empty());
+        assert_eq!(retry.speaker.as_deref(), Some("勇者"));
+    }
+
+    #[tokio::test]
+    async fn exhausted_semantic_retries_keep_first_output_for_review() {
+        let (db, _f) = test_db().await;
+        insert_dialogue_scene(&db).await;
+        let first = "Let's go. This output wrongly continues with a very long neighbouring conversation that does not belong to the source segment at all.";
+        let second = "Another excessively expanded answer that keeps inventing unrelated dialogue and remains far too long for this tiny source.";
+        let third = "A final excessively expanded answer that still invents unrelated dialogue and must never be silently accepted.";
+        let provider = MockProvider::new(vec![
+            Ok(vec![first.to_string()]),
+            Ok(vec![second.to_string()]),
+            Ok(vec![third.to_string()]),
+        ]);
+
+        let (results, metrics) = translate_batch(
+            &[("center".to_string(), "行こう".to_string())],
+            &provider,
+            &ctx(),
+            "ja-en",
+            &db,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.calls(), 3);
+        assert_eq!(results[0].translated_text, first);
+        assert!(results[0].needs_review);
+        assert_eq!(metrics.semantic_rejections, 1);
+        assert_eq!(metrics.semantic_retries, 2);
+        assert_eq!(metrics.semantic_recoveries, 0);
+        assert_eq!(provider.contexts()[2].segment_contexts, vec![None]);
+    }
+
+    #[tokio::test]
+    async fn translated_neighbor_overlap_triggers_isolated_retry() {
+        let (db, _f) = test_db().await;
+        insert_dialogue_scene(&db).await;
+        sqlx::query(
+            "UPDATE segments SET target_text = 'We should go and continue the mission.', \
+                    status = 'translated' WHERE id = 'after'",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let provider = MockProvider::new(vec![
+            Ok(vec!["Let's go and continue the mission.".to_string()]),
+            Ok(vec!["Let's go.".to_string()]),
+        ]);
+
+        let results = run_inner(
+            vec![("center".to_string(), "行こう".to_string())],
+            &provider,
+            ctx(),
+            &db,
+            None,
+            None,
+            None,
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(results[0].translated_text, "Let's go.");
+        assert!(!results[0].needs_review);
     }
 
     #[tokio::test]
@@ -987,6 +1174,116 @@ mod tests {
         assert_eq!(provider.contexts()[0].segment_contexts.len(), 8);
         assert_eq!(provider.contexts()[1].segment_contexts.len(), 1);
         assert!(results.iter().all(|result| !result.needs_review));
+    }
+
+    #[tokio::test]
+    async fn canonical_and_dialogue_requests_receive_only_their_own_terminology() {
+        let (db, _f) = test_db().await;
+        sqlx::query(
+            "INSERT INTO projects (id, name, engine, game_path, source_language, target_language) \
+             VALUES ('term-p', 'Terms', 'mv_mz', '/tmp', 'ja', 'en')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO source_files (id, project_id, file_name, file_path, file_type) \
+             VALUES ('term-f', 'term-p', 'Map001.json', '/tmp/Map001.json', 'map')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        for (id, source, kind, sequence) in [
+            ("term-name", "勇者", "actor_name", 0_i64),
+            ("term-dialogue", "剣を取れ", "dialogue", 1_i64),
+        ] {
+            sqlx::query(
+                "INSERT INTO segments \
+                 (id, source_file_id, json_key, source_text, segment_kind, scene_id, \
+                  sequence_index, speaker) \
+                 VALUES (?, 'term-f', ?, ?, ?, 'Map001.json:event:1:page:0', ?, '王')",
+            )
+            .bind(id)
+            .bind(format!("/{id}"))
+            .bind(source)
+            .bind(kind)
+            .bind(sequence)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        for (entry_id, source, semantic_type, segment_id, target) in [
+            ("term-e-hero", "勇者", "character", "term-name", "Hero"),
+            ("term-e-sword", "剣", "item", "term-dialogue", "Sword"),
+        ] {
+            sqlx::query(
+                "INSERT INTO terminology_entries (\
+                    id, source_language, canonical_text, normalized_text, part_of_speech, \
+                    semantic_type, sense_key, status, origin, confidence\
+                 ) VALUES (?, 'ja', ?, ?, 'noun', ?, '', 'active', 'manual', 1.0)",
+            )
+            .bind(entry_id)
+            .bind(source)
+            .bind(source)
+            .bind(semantic_type)
+            .execute(&db)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO terminology_occurrences \
+                 (entry_id, project_id, segment_id, surface_text, engine_kind, occurrence_count) \
+                 VALUES (?, 'term-p', ?, ?, ?, 1)",
+            )
+            .bind(entry_id)
+            .bind(segment_id)
+            .bind(source)
+            .bind(if segment_id == "term-name" {
+                "actor_name"
+            } else {
+                "dialogue"
+            })
+            .execute(&db)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO terminology_translations (\
+                    id, entry_id, target_language, target_text, review_status, enforcement, confidence\
+                 ) VALUES (?, ?, 'en', ?, 'locked', 'required', 1.0)",
+            )
+            .bind(format!("translation-{entry_id}"))
+            .bind(entry_id)
+            .bind(target)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+
+        let provider = MockProvider::new(vec![
+            Ok(vec!["Hero".to_string()]),
+            Ok(vec!["Take the Sword".to_string()]),
+        ]);
+        run_inner(
+            vec![
+                ("term-name".to_string(), "勇者".to_string()),
+                ("term-dialogue".to_string(), "剣を取れ".to_string()),
+            ],
+            &provider,
+            ctx(),
+            &db,
+            None,
+            None,
+            None,
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        let contexts = provider.contexts();
+        assert_eq!(contexts.len(), 2);
+        assert_eq!(contexts[0].terminology_hints.len(), 1);
+        assert_eq!(contexts[0].terminology_hints[0].source, "勇者");
+        assert_eq!(contexts[1].terminology_hints.len(), 1);
+        assert_eq!(contexts[1].terminology_hints[0].source, "剣");
     }
 
     #[tokio::test]
