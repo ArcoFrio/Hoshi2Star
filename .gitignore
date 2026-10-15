@@ -13,7 +13,14 @@ dist-ssr
 *.local
 ROADMAP.md
 
-.agents
+# Conserver les skills locaux existants hors Git, partager ceux de BMAD.
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/bmad-*/
+
+# Réponses personnelles de l'installateur BMAD (configuration commune séparée).
+_bmad/config.user.toml
 docs/games/*
 test/*
 

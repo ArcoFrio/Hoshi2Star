@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+@AGENTS.md
+
+> **Continuité Codex / Claude :** appliquer le protocole commun importé ci-dessus.
+> Commencer par `tasks/handoff.md` et le journal lié ; consigner les avancées,
+> corrections, vérifications et prochaines actions dans les mêmes fichiers que Codex.
+> Pour la reprise et le suivi, `AGENTS.md` prévaut sur les anciennes consignes
+> de ce fichier. Ne pas déduire l'état courant de la seule mémoire de Claude.
+
 > **Always read `CONTEXT.md` before coding** — it is the authoritative reference for stack versions, architecture, conventions, and critical mistakes to avoid. Read `ROADMAP.md` before adding any feature to verify the current phase and task dependencies. Re-read `tasks/lessons.md` at the start of each session to avoid repeating past mistakes.
 
 ---

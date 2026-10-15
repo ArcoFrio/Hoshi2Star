@@ -3,6 +3,9 @@
 **Phase** : F0 / F1 / F2 / F3 / F4 / F5
 **Durée estimée** : Xh
 **Statut** : ✅ Complété / 🔄 En cours / ⏸ Interrompu
+**Outil** : Codex / Claude / autre
+**Branche et commit de départ** : à relever avec Git
+**Objectif / plan / story** : périmètre autorisé et référence
 
 ---
 
@@ -41,6 +44,19 @@
 <!-- Bugs, erreurs, blocages et comment ils ont été résolus -->
 - 
 
+## Corrections et erreurs à ne plus répéter
+
+<!-- Symptôme → cause confirmée → correction → preuve (test, fichier, commit).
+     Reporter la règle durable dans tasks/lessons.md sans créer de doublon.
+     Indiquer explicitement les causes encore supposées. -->
+-
+
+## Vérifications et limites
+
+<!-- Commande, résultat observé et date. Préciser les tests non exécutés.
+     Ne pas confondre implémenté, vérifié, commité et livré. -->
+-
+
 ## Tâches ROADMAP cochées
 
 <!-- Copier les items cochés dans ROADMAP.md pendant cette session -->
@@ -48,8 +64,9 @@
 
 ## Prochaine session
 
-<!-- Ce qui reste à faire, dans quel ordre -->
+<!-- Point d'arrêt exact : fichier/fonction, reste à faire, blocage et première
+     action. Actualiser également tasks/handoff.md avant de rendre la main. -->
 - 
 
 ---
-*Généré par Claude Code — Hoshi2Star*
+*Journal partagé Codex / Claude — Hoshi2Star*

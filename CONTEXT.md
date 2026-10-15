@@ -12,10 +12,12 @@
 Format fichiers : `YYYY-MM-DD-<sujet>.md` (ex: `2026-05-24-f0-setup.md`).
 Template : `docs/journal/TEMPLATE.md`.
 
-**Règles pour Claude Code :**
-- Lire le journal le plus récent au début de chaque session
+**Règles communes à Codex et Claude Code — voir `AGENTS.md` :**
+- Lire d'abord `tasks/handoff.md` et le journal qu'il référence au début de chaque session
+- Vérifier l'état Git réel et lire `tasks/lessons.md` avant de poursuivre
+- Actualiser `tasks/handoff.md` après chaque étape significative et avant de rendre la main
 - Créer une nouvelle entrée à la fin de chaque session
-- Documenter : ce qui a été fait, fichiers créés/modifiés, décisions prises, tâches ROADMAP cochées, prochaine session
+- Documenter : outil utilisé, ce qui a été fait, fichiers créés/modifiés, décisions, corrections, preuves, limites et prochaine action
 - Ne jamais modifier une entrée passée — créer une nouvelle entrée si correction nécessaire
 
 ## Stack (versions verrouillées)
