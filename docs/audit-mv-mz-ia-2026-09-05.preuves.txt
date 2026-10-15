@@ -1,0 +1,51 @@
+Audit du 2026-09-05 — résultats des vérifications
+Typecheck : réussi. ESLint : 0 erreur, 10 avertissements.
+
+Frontend, suite entière, un worker
+
+ RUN  v4.1.9 /home/blackat/Bureau/Hoshi2Star
+
+
+ Test Files  23 passed (23)
+      Tests  80 passed (80)
+   Start at  07:49:46
+   Duration  28.16s (transform 558ms, setup 3.57s, import 4.00s, tests 4.17s, environment 13.86s)
+
+
+Rust, suite entière autorisée hors bac à sable
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/hoshi2star_lib-ca8adace3a056a18)
+test result: ok. 470 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.38s
+     Running unittests src/main.rs (src-tauri/target/debug/deps/hoshi2star-753cd1301fa9d12c)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/e2e_project_flow.rs (src-tauri/target/debug/deps/e2e_project_flow-6b87f3df89153b8b)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.75s
+     Running tests/sqlite_migration.rs (src-tauri/target/debug/deps/sqlite_migration-5fcc4529fb82653e)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+Probes ciblées et inventaire des fixtures
+   Compiling hoshi2star v0.4.10 (/home/blackat/Bureau/Hoshi2Star/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.18s
+     Running tests/audit_probe_20260905.rs (src-tauri/target/debug/deps/audit_probe_20260905-1125750eebfef16b)
+
+running 10 tests
+test injection_does_not_verify_the_original_text ... ok
+test bare_system_markers_are_unprotected_and_qa_accepts_their_loss ... ok
+test legitimate_shared_vocabulary_is_a_critical_error ... ok
+test unknown_tokens_and_reordered_color_codes_are_accepted ... ok
+test visible_map_and_actor_change_fields_are_not_extracted ... ok
+test provider_failure_becomes_successful_pipeline_and_is_excluded_from_resume ... ok
+test reopening_preserves_missing_context_and_original_language_pair ... ok
+test font_export_changes_mz_speaker_name_after_the_qa_gate ... ok
+test qa_context_query_exceeds_sqlite_variable_limit_on_large_projects ... ok
+FIXTURE 1: files=127, segments=22927
+FIXTURE 2: files=127, segments=22915
+FIXTURE 3: files=32, segments=1191
+FIXTURE 4: files=163, segments=15498
+FIXTURE 5: files=34, segments=19663
+test inspect_fixture_extraction_counts_without_outputting_game_text ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.79s
+
+
+Les probes constatent des défauts actuels. Ne pas les intégrer en tests de non-régression sans inverser les attentes après correction.
