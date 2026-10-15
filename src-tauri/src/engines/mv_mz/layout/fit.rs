@@ -6,6 +6,7 @@
 //! into its own 401 commands (embedded `\n`), so the event structure never
 //! changes. Messages that already fit are left as they are.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -47,6 +48,10 @@ pub struct FitSettings {
     pub min_font_size: u32,
     /// Dialogue font size emitted at every page start (`None` = the game's).
     pub dialogue_font_size: Option<u32>,
+    /// Drop a `\FS[n]` stored at the start of a translated line (an older
+    /// export's prefix; the export's "replace existing" choice). Otherwise it
+    /// is the translator's code and is kept.
+    pub strip_stored_font_prefix: bool,
 }
 
 pub struct FitContext<'a> {
@@ -112,6 +117,16 @@ pub struct Fitted {
 /// `\FS[n]` that an older export stored at the start of targets.
 static RE_STORED_FONT_PREFIX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\\FS\[\d+\]").expect("RE_STORED_FONT_PREFIX must compile"));
+
+/// A line as fitting reads it: without a stored export prefix when
+/// [`FitSettings::strip_stored_font_prefix`] says so, as translated otherwise.
+pub(crate) fn effective_text<'a>(line: &'a MessageLine, settings: &FitSettings) -> Cow<'a, str> {
+    if line.writable && settings.strip_stored_font_prefix {
+        RE_STORED_FONT_PREFIX.replace(&line.text, "")
+    } else {
+        Cow::Borrowed(&line.text)
+    }
+}
 
 /// A bracketed speaker label on its own line (`【恵】`, `[Megumi]`).
 static RE_NAME_LABEL: LazyLock<Regex> = LazyLock::new(|| {
@@ -227,11 +242,7 @@ fn blocks(
         }
         let texts: Vec<String> = members
             .iter()
-            .map(|&i| {
-                RE_STORED_FONT_PREFIX
-                    .replace(&input.lines[i].text, "")
-                    .into_owned()
-            })
+            .map(|&i| effective_text(&input.lines[i], settings).into_owned())
             .collect();
         let mut paragraph: Vec<String> = Vec::new();
         let flush = |paragraph: &mut Vec<String>, out: &mut Vec<Block>| {
@@ -678,36 +689,38 @@ fn assembled(input: &MessageInput, values: &[Option<String>]) -> String {
         .join("\n")
 }
 
-/// The as-translated lines (stored font prefixes removed), with the dialogue
-/// font size at every page start.
+/// The as-translated lines (see [`effective_text`]), with the dialogue font
+/// size at every page start.
 fn as_is(
     input: &MessageInput,
     ctx: &FitContext,
     spec: &BoxSpec,
     settings: &FitSettings,
 ) -> (Vec<Option<String>>, Vec<PageView>) {
-    let mut values: Vec<Option<String>> = input
+    let base: Vec<Option<String>> = input
         .lines
         .iter()
-        .map(|line| {
-            let stripped = RE_STORED_FONT_PREFIX.replace(&line.text, "");
-            (line.writable && stripped != line.text).then(|| stripped.into_owned())
+        .map(|line| match effective_text(line, settings) {
+            Cow::Owned(text) => Some(text),
+            Cow::Borrowed(_) => None,
         })
         .collect();
+    let mut values = base.clone();
     if let Some(size) = settings.dialogue_font_size {
         // Page starts come from the simulation; a smaller font can move
-        // them, so look twice.
+        // them, so look twice (each time from the lines as translated).
         for _ in 0..2 {
             let pages = simulate(&assembled(input, &values), spec, ctx.metrics, ctx.inserts);
+            let mut next = base.clone();
             let mut start = 0;
             for page in &pages {
                 if let Some(line) = input.lines.get(start).filter(|l| l.writable) {
-                    let current = values[start].clone().unwrap_or_else(|| line.text.clone());
-                    let body = RE_STORED_FONT_PREFIX.replace(&current, "").into_owned();
-                    values[start] = Some(format!("\\FS[{size}]{body}"));
+                    let body = next[start].clone().unwrap_or_else(|| line.text.clone());
+                    next[start] = Some(format!("\\FS[{size}]{body}"));
                 }
                 start += page.lines.len().max(1);
             }
+            values = next;
         }
     }
     let pages = simulate(&assembled(input, &values), spec, ctx.metrics, ctx.inserts);
@@ -1005,6 +1018,7 @@ mod tests {
             overflow: Overflow::NewPage,
             min_font_size: 20,
             dialogue_font_size: None,
+            strip_stored_font_prefix: false,
         }
     }
 

@@ -192,6 +192,7 @@ async fn real_game_fit_dump() {
         dialogue_font_size: std::env::var("H2S_FIT_FONT")
             .ok()
             .and_then(|v| v.parse().ok()),
+        strip_stored_font_prefix: false,
     };
 
     let mut files: Vec<String> = std::fs::read_dir(&data)

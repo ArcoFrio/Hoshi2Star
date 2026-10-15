@@ -3,8 +3,10 @@
 //! A fitted message or description must draw without a line wider than its
 //! box, without a blank page, with no control characters besides `\n` and
 //! U+000C, and with exactly the translated text: the same visible
-//! characters (whitespace aside) and the same escape codes (colour and font
-//! size codes may be repeated at page starts).
+//! characters (whitespace aside) and the same escape codes in the same order.
+//! The only codes fitting may add are font size and colour codes at the
+//! start of a line, where it re-emits the font and colour in effect (page
+//! starts, a description's second line).
 
 use serde::Serialize;
 
@@ -25,25 +27,64 @@ pub enum FitProblem {
     TextChanged,
 }
 
+/// One escape code of a text, in order.
+struct Code {
+    raw: String,
+    /// A font size or colour code at the start of a line: the only kind
+    /// fitting may add.
+    reemitted: bool,
+}
+
 /// What must survive fitting: visible characters without whitespace, and
-/// every escape code except colour/font codes (re-emitted at page starts).
-fn essence(text: &str, inserts: &Inserts) -> (String, Vec<String>, usize) {
+/// every escape code in order.
+fn essence(text: &str, inserts: &Inserts) -> (String, Vec<Code>) {
     let mut visible = String::new();
     let mut codes = Vec::new();
-    let mut colors = 0;
+    let mut line_start = true;
     for token in tokenize(text, inserts) {
         match &token.kind {
-            TokenKind::Text => visible.extend(token.raw.chars().filter(|c| !c.is_whitespace())),
-            TokenKind::Newline | TokenKind::PageBreak | TokenKind::FontSize(_) => {}
-            TokenKind::Color(_) => colors += 1,
-            _ => codes.push(normalized_code(&token)),
+            TokenKind::Text => {
+                visible.extend(token.raw.chars().filter(|c| !c.is_whitespace()));
+                line_start = false;
+            }
+            TokenKind::Newline | TokenKind::PageBreak => line_start = true,
+            kind => {
+                let font_or_color = matches!(kind, TokenKind::FontSize(_) | TokenKind::Color(_));
+                codes.push(Code {
+                    raw: normalized_code(&token),
+                    reemitted: line_start && font_or_color,
+                });
+                line_start &= font_or_color;
+            }
         }
     }
-    (visible, codes, colors)
+    (visible, codes)
 }
 
 fn normalized_code(token: &Token) -> String {
     token.raw.to_ascii_uppercase()
+}
+
+/// `true` when `output` holds `translated`'s codes in the same order, plus
+/// only re-emitted font size / colour codes.
+fn same_codes(translated: &[Code], output: &[Code]) -> bool {
+    // ok[j]: translated[i..] matches output[j..], for the current i
+    // (rows filled from the end; O(n·m) time, O(m) memory).
+    let m = output.len();
+    let mut ok = vec![false; m + 1];
+    ok[m] = true;
+    for j in (0..m).rev() {
+        ok[j] = output[j].reemitted && ok[j + 1];
+    }
+    for code in translated.iter().rev() {
+        let mut row = vec![false; m + 1];
+        for j in (0..m).rev() {
+            row[j] =
+                (output[j].raw == code.raw && ok[j + 1]) || (output[j].reemitted && row[j + 1]);
+        }
+        ok = row;
+    }
+    ok[0]
 }
 
 /// Check a fitted text (`output`) drawn in `spec` against the translated
@@ -62,9 +103,9 @@ pub fn check(
             problems.push(FitProblem::ControlCharacter { code: c as u32 });
         }
     }
-    let (visible_in, codes_in, colors_in) = essence(translated, inserts);
-    let (visible_out, codes_out, colors_out) = essence(output, inserts);
-    if visible_in != visible_out || codes_in != codes_out || colors_out < colors_in {
+    let (visible_in, codes_in) = essence(translated, inserts);
+    let (visible_out, codes_out) = essence(output, inserts);
+    if visible_in != visible_out || !same_codes(&codes_in, &codes_out) {
         problems.push(FitProblem::TextChanged);
     }
     let pages = simulate(output, spec, metrics, inserts);
@@ -116,6 +157,25 @@ mod tests {
     #[test]
     fn accepts_rewrapped_text_with_repeated_codes() {
         assert!(problems("a b \\C[2]c d", "a b\n\\C[2]c\u{000C}\n\\FS[26]\\C[2]d").is_empty());
+    }
+
+    #[test]
+    fn font_and_colour_codes_must_survive_in_order() {
+        // A translator's own font code may not be dropped (or moved).
+        assert_eq!(
+            problems("\\FS[20]small words", "small words"),
+            vec![FitProblem::TextChanged]
+        );
+        assert!(problems("\\FS[20]small words", "\\FS[26]\\FS[20]small\nwords").is_empty());
+        // Colour codes in a different order are a different text.
+        assert_eq!(
+            problems("\\C[2]a\\C[3]b", "\\C[3]a\\C[2]b"),
+            vec![FitProblem::TextChanged]
+        );
+        // Codes fitting adds are only accepted at a line start.
+        assert_eq!(problems("a b", "a \\C[2]b"), vec![FitProblem::TextChanged]);
+        assert!(problems("a b", "a\n\\C[2]b").is_empty());
+        assert_eq!(problems("a b", "a\n\\I[3]b"), vec![FitProblem::TextChanged]);
     }
 
     #[test]

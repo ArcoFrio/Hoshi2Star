@@ -206,6 +206,10 @@ fn be_u32(bytes: &[u8], at: usize) -> Result<u32, FontError> {
         .ok_or(FontError::Malformed("header"))
 }
 
+/// Largest font Hoshi2Star unpacks (CJK game fonts weigh a few tens of MB):
+/// the sizes in a WOFF header come from the game folder and are not trusted.
+const MAX_SFNT_BYTES: usize = 64 * 1024 * 1024;
+
 /// Unpack a WOFF1 file (zlib-compressed tables) into a plain sfnt.
 fn woff1_to_sfnt(woff: &[u8]) -> Result<Vec<u8>, FontError> {
     const HEADER: usize = 44;
@@ -213,6 +217,7 @@ fn woff1_to_sfnt(woff: &[u8]) -> Result<Vec<u8>, FontError> {
     let flavor = be_u32(woff, 4)?;
     let count = usize::from(be_u16(woff, 12)?);
     let mut tables = Vec::with_capacity(count);
+    let mut total = 0usize;
     for index in 0..count {
         let at = HEADER + index * ENTRY;
         let tag: [u8; 4] = woff
@@ -225,9 +230,15 @@ fn woff1_to_sfnt(woff: &[u8]) -> Result<Vec<u8>, FontError> {
         let raw = woff
             .get(offset..offset + compressed)
             .ok_or(FontError::Malformed("table data"))?;
+        total = total.saturating_add(original);
+        if total > MAX_SFNT_BYTES {
+            return Err(FontError::Malformed("font too large"));
+        }
         let data = if compressed < original {
             let mut out = Vec::with_capacity(original);
+            // Never inflate past the declared size (one byte more proves a lie).
             flate2::read::ZlibDecoder::new(raw)
+                .take(original as u64 + 1)
                 .read_to_end(&mut out)
                 .map_err(|e| FontError::Inflate(e.to_string()))?;
             if out.len() != original {
@@ -428,6 +439,40 @@ mod tests {
         assert_eq!(metrics.text_width("Ab", 26.0), 26.0);
         assert_eq!(metrics.text_width("…♥", 26.0), 52.0);
         assert_eq!(metrics.text_width("あ", 26.0), 26.0);
+    }
+
+    /// A one-table WOFF1 whose table claims `original` bytes.
+    fn woff_with_table(stored: &[u8], original: u32) -> Vec<u8> {
+        let mut out = vec![0u8; 44 + 20];
+        out[..4].copy_from_slice(b"wOFF");
+        out[4..8].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        out[12..14].copy_from_slice(&1u16.to_be_bytes());
+        out[44..48].copy_from_slice(b"cmap");
+        out[48..52].copy_from_slice(&64u32.to_be_bytes());
+        out[52..56].copy_from_slice(&(stored.len() as u32).to_be_bytes());
+        out[56..60].copy_from_slice(&original.to_be_bytes());
+        out.extend_from_slice(stored);
+        out
+    }
+
+    #[test]
+    fn woff_sizes_are_capped_and_never_inflated_past_the_header() {
+        use std::io::Write as _;
+        // A table claiming more than the cap is refused before any allocation.
+        let huge = woff_with_table(&[0; 16], (MAX_SFNT_BYTES + 1) as u32);
+        assert!(matches!(
+            woff1_to_sfnt(&huge),
+            Err(FontError::Malformed("font too large"))
+        ));
+        // 8 MB of zeros compress to a few KB: claiming 64 KB must stop there.
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&vec![0u8; 8 * 1024 * 1024]).unwrap();
+        let bomb = encoder.finish().unwrap();
+        assert!(bomb.len() < 64 * 1024);
+        assert!(matches!(
+            woff1_to_sfnt(&woff_with_table(&bomb, 64 * 1024)),
+            Err(FontError::Malformed("table length"))
+        ));
     }
 
     #[test]

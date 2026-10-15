@@ -30,7 +30,9 @@ Format: [Keep a Changelog](https://keepachangelog.com) — [Semantic Versioning]
   - Otherwise lines are rewrapped evenly (or only the too-long ones are split). A text that is still too tall continues on a new page that starts with a sentence, shrinks the font down to a chosen minimum, or is left as is and reported.
   - Timed and auto-closing messages never get an extra page.
   - Each block of lines is written back into its own commands, so no event command is ever added or removed.
-  - Every value is re-checked before export, and a text that fails the check is exported as translated.
+  - Every value is re-checked before export: same text, same escape codes in the same order. A text that fails the check is exported as translated, like any text fitting leaves alone (it keeps the export's per-line font prefix).
+  - A `\FS[n]` you wrote at the start of a line is kept. It is only removed when the export replaces existing font codes.
+  - Fitting can only be enabled for games where export can fit (MZ).
 
   A new "Preview" tab draws the selected message or description as the game will show it, using the game's font, with per-text choices. The settings dialog shows the detected box and font, plugin warnings, characters missing from the font, live counts for the settings being edited, and the texts to review. The export confirmation summarises what fitting will do. Widths match Chromium's measurement exactly; replaying the results through the game's own engine code gave zero differences over 2,480 messages. The export font size becomes the dialogue size and is emitted once per page.
 

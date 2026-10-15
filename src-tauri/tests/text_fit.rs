@@ -382,10 +382,14 @@ fn translation(source: &str) -> &'static str {
 }
 
 async fn export(opened: &Opened, font_size: Option<u32>) -> String {
+    export_with(opened, font_size, true).await
+}
+
+async fn export_with(opened: &Opened, font_size: Option<u32>, replace_existing: bool) -> String {
     hoshi2star_lib::commands::export::export_project(
         opened.project_id.clone(),
         font_size,
-        true,
+        replace_existing,
         None,
         opened.app.state(),
     )
@@ -479,4 +483,96 @@ async fn a_message_turned_off_exports_as_translated() {
     let map = zip_json(&export(&opened, None).await, "data/Map001.json");
     assert_eq!(line(&map, 4), translation("一つ目の文。"));
     assert_eq!(line(&map, 7), translation("四つ目の文。"));
+}
+
+#[tokio::test]
+async fn a_message_left_as_translated_keeps_the_export_font_prefix() {
+    let opened = opened().await;
+    set_text_fit(opened.project_id.clone(), enabled(), opened.app.state())
+        .await
+        .unwrap();
+    let first = segment_id(&opened, "一つ目の文。").await;
+    set_text_fit_override(
+        opened.project_id.clone(),
+        first,
+        Some(FitOverride {
+            disabled: true,
+            ..FitOverride::default()
+        }),
+        opened.app.state(),
+    )
+    .await
+    .unwrap();
+    // Not fitted → exported like any map line: one prefix per line.
+    let map = zip_json(&export(&opened, Some(22)).await, "data/Map001.json");
+    for (index, source) in [(4, "一つ目の文。"), (7, "四つ目の文。")] {
+        assert_eq!(
+            line(&map, index),
+            format!("\\FS[22]{}", translation(source))
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_translators_font_code_survives_fitting() {
+    let opened = opened().await;
+    set_text_fit(opened.project_id.clone(), enabled(), opened.app.state())
+        .await
+        .unwrap();
+    let second = segment_id(&opened, "二行目。").await;
+    let db = &opened.app.state::<AppState>().db;
+    sqlx::query("UPDATE segments SET target_text = ? WHERE id = ?")
+        .bind("\\FS[20]Second line.")
+        .bind(&second)
+        .execute(db)
+        .await
+        .unwrap();
+    let message = |map: &serde_json::Value| format!("{}\n{}", line(map, 1), line(map, 2));
+
+    // Kept (and laid out) unless the export replaces stored font codes.
+    let kept = zip_json(&export_with(&opened, None, false).await, "data/Map001.json");
+    assert!(
+        message(&kept).contains("\\FS[20]Second"),
+        "{}",
+        message(&kept)
+    );
+    let kept = zip_json(
+        &export_with(&opened, Some(22), false).await,
+        "data/Map001.json",
+    );
+    assert!(
+        message(&kept).contains("\\FS[20]Second"),
+        "{}",
+        message(&kept)
+    );
+    // "Replace existing" treats it as an older export's prefix, as for any row.
+    let replaced = zip_json(
+        &export_with(&opened, Some(22), true).await,
+        "data/Map001.json",
+    );
+    assert!(
+        !message(&replaced).contains("\\FS[20]"),
+        "{}",
+        message(&replaced)
+    );
+    assert!(message(&replaced).starts_with("\\FS[22]"));
+}
+
+#[tokio::test]
+async fn fitting_cannot_be_enabled_where_export_cannot_fit() {
+    let opened = opened().await;
+    // Without the MZ core script this looks like an MV game.
+    std::fs::remove_file(opened._temporary.path().join("game/js/rmmz_core.js")).unwrap();
+    let error = set_text_fit(opened.project_id.clone(), enabled(), opened.app.state())
+        .await
+        .unwrap_err();
+    assert!(error.contains("MZ"), "{error}");
+    // Turning it off is always possible.
+    set_text_fit(
+        opened.project_id.clone(),
+        TextFitSettings::default(),
+        opened.app.state(),
+    )
+    .await
+    .unwrap();
 }

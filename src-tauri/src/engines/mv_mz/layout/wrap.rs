@@ -211,55 +211,41 @@ fn make_piece(sized: Vec<(Token, f32)>, metrics: &Metrics) -> Piece {
     }
 }
 
-fn line_width(pieces: &[Piece]) -> f32 {
-    let total: f32 = pieces.iter().map(|p| p.width + p.space).sum();
-    total - pieces.last().map_or(0.0, |p| p.space)
-}
-
 /// Balanced wrapping: the minimum number of lines that fit `width` (a single
 /// piece wider than `width` takes a line on its own), then the most even
 /// split (least squared slack, last line included, so a message never ends
 /// on an orphan word when an even split exists). With `exact_lines`, exactly
 /// that many lines (`None` if impossible).
+///
+/// Cost: O(n·k) for n pieces and at most k pieces per line (times
+/// `exact_lines` when given), memory O(n) (times `exact_lines`).
 pub fn wrap(pieces: &[Piece], width: f32, exact_lines: Option<usize>) -> Option<Vec<Vec<Token>>> {
     let n = pieces.len();
     if n == 0 {
         return matches!(exact_lines, None | Some(1)).then(|| vec![Vec::new()]);
     }
-    let fits = |i: usize, j: usize| j == i + 1 || line_width(&pieces[i..j]) <= width + 0.001;
+    // prefix[k]: width of pieces[..k] with their trailing spaces (f64: the
+    // sums of long texts must stay exact to well under the 0.001 px margin).
+    let mut prefix = Vec::with_capacity(n + 1);
+    prefix.push(0.0f64);
+    for piece in pieces {
+        prefix.push(prefix[prefix.len() - 1] + f64::from(piece.width) + f64::from(piece.space));
+    }
+    let width = f64::from(width);
+    let width_of = |i: usize, j: usize| prefix[j] - prefix[i] - f64::from(pieces[j - 1].space);
+    let fits = |i: usize, j: usize| j == i + 1 || width_of(i, j) <= width + 0.001;
     let slack = |i: usize, j: usize| {
-        let gap = (width - line_width(&pieces[i..j])).max(0.0) as f64;
+        let gap = (width - width_of(i, j)).max(0.0);
         gap * gap
     };
-    // best[c][j]: least cost to lay pieces[..j] in c lines.
-    let max_lines = exact_lines.unwrap_or(n).min(n);
-    let mut best = vec![vec![f64::INFINITY; n + 1]; max_lines + 1];
-    let mut back = vec![vec![0usize; n + 1]; max_lines + 1];
-    best[0][0] = 0.0;
-    for c in 1..=max_lines {
-        for j in 1..=n {
-            for i in (0..j).rev() {
-                if !fits(i, j) {
-                    break;
-                }
-                if best[c - 1][i].is_finite() {
-                    let cost = best[c - 1][i] + slack(i, j);
-                    if cost < best[c][j] {
-                        best[c][j] = cost;
-                        back[c][j] = i;
-                    }
-                }
-            }
-        }
-    }
-    let lines = match exact_lines {
-        Some(count) => (count <= max_lines && best[count][n].is_finite()).then_some(count)?,
-        None => (1..=max_lines).find(|&c| best[c][n].is_finite())?,
+    let back = match exact_lines {
+        Some(count) => exact_breaks(n, count, &fits, &slack)?,
+        None => fewest_breaks(n, &fits, &slack),
     };
-    let mut bounds = Vec::with_capacity(lines);
+    let mut bounds = Vec::new();
     let mut j = n;
-    for c in (1..=lines).rev() {
-        let i = back[c][j];
+    while j > 0 {
+        let i = back[j];
         bounds.push((i, j));
         j = i;
     }
@@ -270,6 +256,80 @@ pub fn wrap(pieces: &[Piece], width: f32, exact_lines: Option<usize>) -> Option<
             .map(|(i, j)| trim_line(pieces[i..j].iter().flat_map(|p| p.tokens.clone()).collect()))
             .collect(),
     )
+}
+
+/// Line start for each end `j` of the layout with the fewest lines, then the
+/// least slack. Comparing `(lines, slack)` per prefix is enough: in a layout
+/// with the fewest lines, every prefix ending at a break also uses its own
+/// fewest lines.
+fn fewest_breaks(
+    n: usize,
+    fits: &dyn Fn(usize, usize) -> bool,
+    slack: &dyn Fn(usize, usize) -> f64,
+) -> Vec<usize> {
+    let mut best = vec![(usize::MAX, f64::INFINITY); n + 1];
+    let mut back = vec![0usize; n + 1];
+    best[0] = (0, 0.0);
+    for j in 1..=n {
+        for i in (0..j).rev() {
+            if !fits(i, j) {
+                break;
+            }
+            let (lines, cost) = best[i];
+            if lines == usize::MAX {
+                continue;
+            }
+            let candidate = (lines + 1, cost + slack(i, j));
+            if candidate.0 < best[j].0 || (candidate.0 == best[j].0 && candidate.1 < best[j].1) {
+                best[j] = candidate;
+                back[j] = i;
+            }
+        }
+    }
+    back
+}
+
+/// Line starts of the least-slack layout in exactly `count` lines (`None` if
+/// impossible); `back[j]` is only meaningful along the chosen layout.
+fn exact_breaks(
+    n: usize,
+    count: usize,
+    fits: &dyn Fn(usize, usize) -> bool,
+    slack: &dyn Fn(usize, usize) -> f64,
+) -> Option<Vec<usize>> {
+    if count == 0 || count > n {
+        return None;
+    }
+    // best[c][j]: least cost to lay pieces[..j] in c lines.
+    let mut best = vec![vec![f64::INFINITY; n + 1]; count + 1];
+    let mut starts = vec![vec![0usize; n + 1]; count + 1];
+    best[0][0] = 0.0;
+    for c in 1..=count {
+        for j in c..=n {
+            for i in (0..j).rev() {
+                if !fits(i, j) {
+                    break;
+                }
+                if best[c - 1][i].is_finite() {
+                    let cost = best[c - 1][i] + slack(i, j);
+                    if cost < best[c][j] {
+                        best[c][j] = cost;
+                        starts[c][j] = i;
+                    }
+                }
+            }
+        }
+    }
+    if !best[count][n].is_finite() {
+        return None;
+    }
+    let mut back = vec![0usize; n + 1];
+    let mut j = n;
+    for c in (1..=count).rev() {
+        back[j] = starts[c][j];
+        j = starts[c][j];
+    }
+    Some(back)
 }
 
 /// Drop whitespace at the end of a line (the space a break consumed).
@@ -374,5 +434,98 @@ mod tests {
             .map(|p| p.sentence_end)
             .collect();
         assert_eq!(ends, vec![true, false, true, false]);
+    }
+
+    /// The previous all-line-counts dynamic program (O(n²·k²) time, O(n²)
+    /// memory), kept as the reference for the fewest-lines layout.
+    fn reference_wrap(pieces: &[Piece], width: f32) -> Vec<Vec<Token>> {
+        let n = pieces.len();
+        let line_width = |pieces: &[Piece]| {
+            let total: f32 = pieces.iter().map(|p| p.width + p.space).sum();
+            total - pieces.last().map_or(0.0, |p| p.space)
+        };
+        let fits = |i: usize, j: usize| j == i + 1 || line_width(&pieces[i..j]) <= width + 0.001;
+        let slack = |i: usize, j: usize| {
+            let gap = (width - line_width(&pieces[i..j])).max(0.0) as f64;
+            gap * gap
+        };
+        let mut best = vec![vec![f64::INFINITY; n + 1]; n + 1];
+        let mut back = vec![vec![0usize; n + 1]; n + 1];
+        best[0][0] = 0.0;
+        for c in 1..=n {
+            for j in 1..=n {
+                for i in (0..j).rev() {
+                    if !fits(i, j) {
+                        break;
+                    }
+                    if best[c - 1][i].is_finite() {
+                        let cost = best[c - 1][i] + slack(i, j);
+                        if cost < best[c][j] {
+                            best[c][j] = cost;
+                            back[c][j] = i;
+                        }
+                    }
+                }
+            }
+        }
+        let lines = (1..=n).find(|&c| best[c][n].is_finite()).unwrap();
+        let mut bounds = Vec::new();
+        let mut j = n;
+        for c in (1..=lines).rev() {
+            bounds.push((back[c][j], j));
+            j = back[c][j];
+        }
+        bounds.reverse();
+        bounds
+            .into_iter()
+            .map(|(i, j)| trim_line(pieces[i..j].iter().flat_map(|p| p.tokens.clone()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn fewest_lines_layout_matches_the_reference_program() {
+        let metrics = Metrics::Estimated;
+        let words = [
+            "a",
+            "tiny",
+            "word",
+            "considerably",
+            "and",
+            "…",
+            "\\C[2]red\\C[0]",
+            "I",
+            "extraordinarily",
+            "be",
+            "it's",
+            "ok!",
+            "no.",
+            "magic",
+        ];
+        for seed in 0..60usize {
+            let text: Vec<&str> = (0..(5 + seed * 3))
+                .map(|k| words[(k * 7 + seed * 13 + k * k) % words.len()])
+                .collect();
+            let tokens = tokenize(&text.join(" "), &Inserts::default());
+            let pieces = pieces(&tokens, &metrics, 26.0);
+            for width in [13.0 * 6.0, 13.0 * 17.0, 13.0 * 30.0, 776.0] {
+                assert_eq!(
+                    wrap(&pieces, width, None).unwrap(),
+                    reference_wrap(&pieces, width),
+                    "seed {seed}, width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn long_texts_wrap_in_linear_memory() {
+        let metrics = Metrics::Estimated;
+        let text = "lorem ipsum dolor sit amet ".repeat(4_000);
+        let tokens = tokenize(&text, &Inserts::default());
+        let pieces = pieces(&tokens, &metrics, 26.0);
+        assert_eq!(pieces.len(), 20_000);
+        // The old program would have needed two 20 001 × 20 001 tables here.
+        let lines = wrap(&pieces, 776.0, None).unwrap();
+        assert!(lines.len() > 1_000);
     }
 }

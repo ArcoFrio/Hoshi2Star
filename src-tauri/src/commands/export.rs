@@ -360,7 +360,7 @@ pub async fn export_project(
         // Text fitting (MZ): laid-out dialogue and descriptions replace their
         // rows; every other row is exported as before.
         let fitted = if engine == "mv_mz" {
-            fitted_lines(&state, &project_id, font_size).await?
+            fitted_lines(&state, &project_id, font_size, replace_existing).await?
         } else {
             HashMap::new()
         };
@@ -656,16 +656,21 @@ fn locale_option(
     }))
 }
 
-/// Per file id: the value of every line text fitting lays out (`None`: the
-/// translation as is — fitted lines never get the per-line font prefix).
+/// Per file id: the value of every line of the messages and descriptions
+/// text fitting rewrote (`None`: that line as translated — fitted lines never
+/// get the per-line font prefix). Text it left alone is not listed and
+/// exports like any other row, per-line font prefix included.
 type FittedLines = HashMap<String, HashMap<String, Option<String>>>;
 
 /// Fit the project's dialogue / descriptions when text fitting is enabled.
-/// The export's font size (if any) is the dialogue size, emitted once per page.
+/// The export's font size (if any) is the dialogue size, emitted once per
+/// page; with `replace_existing`, a font code an older export stored at the
+/// start of a line is dropped, as for unfitted rows.
 async fn fitted_lines(
     state: &AppState,
     project_id: &str,
     font_size: Option<u32>,
+    replace_existing: bool,
 ) -> Result<FittedLines, String> {
     let mut settings = text_fit::load_settings(&state.db, project_id)
         .await
@@ -676,6 +681,8 @@ async fn fitted_lines(
     if let Some(size) = font_size {
         settings.dialogue_font_size = Some(size);
     }
+    let mut fit = settings.fit_settings();
+    fit.strip_stored_font_prefix = font_size.is_some() && replace_existing;
     let Support::Ready(env) = fit_environment(
         &state.db,
         &state.data_dir,
@@ -700,13 +707,16 @@ async fn fitted_lines(
                 &env,
                 file,
                 targets.get(&file.file_name).unwrap_or(&no_targets),
-                &settings,
+                &fit,
                 overrides.get(&file.file_name).unwrap_or(&no_overrides),
                 settings.enabled_dialogue,
                 settings.enabled_descriptions,
             )?;
             let lines = out.entry(file.id.clone()).or_default();
             for item in items {
+                if item.fitted.values.iter().all(Option::is_none) {
+                    continue;
+                }
                 for ((pointer, segment), value) in item
                     .lines
                     .iter()
@@ -1108,7 +1118,7 @@ pub async fn debug_inject_file(
         .map(|(key, target, _, source)| (key, target, source))
         .collect();
     let fitted = if engine == "mv_mz" {
-        fitted_lines(&state, &file.project_id, font_size).await?
+        fitted_lines(&state, &file.project_id, font_size, replace_existing).await?
     } else {
         HashMap::new()
     };

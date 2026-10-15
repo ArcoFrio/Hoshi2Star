@@ -10,8 +10,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use super::fit::{
-    fit_description, fit_message, help_box, message_box, FitContext, FitOutcome, FitSettings,
-    Fitted, LineBreaks, MessageInput, MessageLine, Overflow,
+    effective_text, fit_description, fit_message, help_box, message_box, FitContext, FitOutcome,
+    FitSettings, Fitted, LineBreaks, MessageInput, MessageLine, Overflow,
 };
 use super::message::{descriptions_in, messages_in};
 use super::simulate::BoxSpec;
@@ -191,10 +191,12 @@ pub fn fit_messages(
             lines,
             face: message.face,
         };
+        // What the output must still say: the translation, minus the stored
+        // export prefixes the export chose to replace.
         let translated = input
             .lines
             .iter()
-            .map(|l| l.text.as_str())
+            .map(|l| effective_text(l, settings))
             .collect::<Vec<_>>()
             .join("\n");
         let fitted = if untranslated {
@@ -324,6 +326,7 @@ mod tests {
             overflow: Overflow::NewPage,
             min_font_size: 20,
             dialogue_font_size: None,
+            strip_stored_font_prefix: false,
         }
     }
 

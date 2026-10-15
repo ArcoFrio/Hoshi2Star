@@ -15,7 +15,7 @@ use crate::core::text_fit::{self, TextFitSettings};
 use crate::domain::types::SourceFile;
 use crate::engines::filter::is_map_file;
 use crate::engines::mv_mz::coverage::plugins::PLUGINS_FILE_NAME;
-use crate::engines::mv_mz::layout::fit::{FitContext, FitOutcome};
+use crate::engines::mv_mz::layout::fit::{FitContext, FitOutcome, FitSettings};
 use crate::engines::mv_mz::layout::font::{FontCache, Metrics};
 use crate::engines::mv_mz::layout::geometry::{
     plugin_layout, Geometry, LayoutWarning, PluginLayout,
@@ -265,20 +265,19 @@ pub fn fit_file(
     env: &FitEnvironment,
     file: &SourceFile,
     targets: &HashMap<String, Target>,
-    settings: &TextFitSettings,
+    fit: &FitSettings,
     overrides: &HashMap<String, StoredOverride>,
     dialogue: bool,
     descriptions: bool,
 ) -> Result<Vec<FitItem>, String> {
     let name = file.file_name.as_str();
-    let fit = settings.fit_settings();
     if dialogue && is_event_file(name) {
         let json = env.read_json(file)?;
         return Ok(fit_messages(
             name,
             &json,
             targets,
-            &fit,
+            fit,
             overrides,
             &env.context(),
         ));
@@ -289,7 +288,7 @@ pub fn fit_file(
             name,
             &json,
             targets,
-            &fit,
+            fit,
             overrides,
             &env.context(),
         ));
@@ -462,7 +461,7 @@ fn scan(
             env,
             file,
             targets.get(&file.file_name).unwrap_or(&empty_targets),
-            settings,
+            &settings.fit_settings(),
             overrides.get(&file.file_name).unwrap_or(&empty_overrides),
             true,
             true,
@@ -530,6 +529,13 @@ pub async fn set_text_fit(
     state: tauri::State<'_, AppState>,
 ) -> Result<TextFitSettings, String> {
     settings.validate()?;
+    // Never on where export cannot fit: QA would hide "line too long" for
+    // text that is then exported unfitted.
+    if settings.enabled() {
+        if let Support::Unsupported(reason) = support(&state, &project_id).await? {
+            return Err(reason);
+        }
+    }
     text_fit::save_settings(&state.db, &project_id, &settings)
         .await
         .map_err(|e| e.to_string())?;
@@ -597,7 +603,15 @@ async fn preview_item(
         let Some(file) = env.files.iter().find(|f| f.id == file_id) else {
             return Ok(None);
         };
-        let items = fit_file(&env, file, &targets, &settings, &overrides, true, true)?;
+        let items = fit_file(
+            &env,
+            file,
+            &targets,
+            &settings.fit_settings(),
+            &overrides,
+            true,
+            true,
+        )?;
         let Some(item) = items.into_iter().find(|item| item.lines.contains(&key)) else {
             return Ok(None);
         };

@@ -36,10 +36,12 @@ seul le caractère de contrôle U+000C est utilisé.
 ## Mesure
 
 `layout::font` lit TTF/OTF/WOFF1 (tables WOFF décompressées avec `flate2`, `ttf-parser` pour cmap
-+ hmtx) et somme les avances par caractère. Caractère absent de la police (le navigateur prend une
-police de secours, ex. Verdana) → estimation East Asian Width et signalement. Vérifié contre
-`measureText` de Chromium sur 419 phrases réelles : 0,00 px d'écart pour tout glyphe présent ; seul
-`♪` (absent de M+ 1m) est surestimé de 2,6 px.
++ hmtx) et somme les avances par caractère. Les tailles d'un en-tête WOFF viennent du dossier du
+jeu : au-delà de 64 Mo la police est refusée, et une table n'est jamais décompressée au-delà de sa
+taille déclarée. Caractère absent de la police (le navigateur prend une police de secours,
+ex. Verdana) → estimation East Asian Width et signalement. Vérifié contre `measureText` de Chromium
+sur 419 phrases réelles : 0,00 px d'écart pour tout glyphe présent ; seul `♪` (absent de M+ 1m) est
+surestimé de 2,6 px.
 
 ## Algorithme (`layout::fit`)
 
@@ -49,7 +51,10 @@ police de secours, ex. Verdana) → estimation East Asian Width et signalement. 
    en début de page).
 3. Sinon : **recomposition** (lignes jointes, coupures UAX #14 via `unicode-linebreak`, découpe
    équilibrée par programmation dynamique) ou **garder les retours** (seules les lignes trop
-   larges sont coupées). Lignes vides et étiquette de nom (【…】) en tête restent à part.
+   larges sont coupées). Lignes vides et étiquette de nom (【…】) en tête restent à part. La
+   découpe compare `(nombre de lignes, écart)` par préfixe : O(n·k) en temps et O(n) en mémoire
+   pour n morceaux et au plus k morceaux par ligne. Un test la compare à l'ancien programme (toutes
+   les tailles de ligne, O(n²) en mémoire).
 4. Si trop haut : **nouvelle page** (pages qui commencent par une phrase, U+000C en fin de page,
    couleur/police réémises), **réduction** (plus grand `\FS[n]` ≥ minimum gardant le nombre de
    pages, réémis à chaque page) ou **laisser** (signalé).
@@ -67,10 +72,17 @@ la suite réduite).
 
 ## Garde-fous
 
-- `layout::verify` vérifie chaque valeur finale avant export : texte et codes identiques à la
-  traduction (espaces et codes couleur/police réémis mis à part), aucune ligne trop large, aucune
-  page vide, seuls `\n` et U+000C comme caractères de contrôle. Un échec → texte exporté tel que
-  traduit (jamais d'export bloqué).
+- `layout::verify` vérifie chaque valeur finale avant export : même texte visible (espaces mis à
+  part) et mêmes codes **dans le même ordre**. Les seuls codes ajoutés acceptés sont `\FS[n]` et
+  `\C[n]` en début de ligne, là où le fitting réémet la police et la couleur (début de page,
+  2ᵉ ligne d'une description). Aucune ligne trop large, aucune page vide, seuls `\n` et U+000C
+  comme caractères de contrôle. Un échec → texte exporté tel que traduit (jamais d'export bloqué).
+- Un `\FS[n]` en début de ligne traduite est un code du traducteur, gardé et mis en page. Il n'est
+  retiré que si l'export remplace les codes de police existants (taille choisie + « remplacer »),
+  comme pour les lignes non mises en page (préfixe d'un ancien export).
+- Le fitting ne peut pas être activé là où l'export ne peut pas mettre en page (pas MZ, pas de
+  System.json) : `set_text_fit` refuse. Sinon la QA masquerait « ligne trop longue » pour un texte
+  exporté tel quel.
 - Le gate d'intégrité existant vérifie que seules les valeurs planifiées changent.
 - Plugins : les redéfinitions de fonctions de mise en page par un plugin activé déclenchent un
   avertissement, sauf profil vérifié (`[layout]` : `neutral`, `inserted_codes`,
@@ -85,7 +97,9 @@ garder), dépassement (nouvelle page / réduire / laisser), taille minimale, tai
 `text_fit_overrides` : choix par message ou description (pointeur du 101 ou du champ + empreinte du
 texte original ; ignoré si le jeu a changé). La taille choisie dans la fenêtre de police à l'export
 devient la taille des dialogues (une fois par page) ; les autres lignes de carte gardent le préfixe
-par ligne. QA : `LineTooLong` est retiré des textes mis en page (repérés par type ou par structure).
+par ligne. Un message que le fitting laisse tel que traduit (désactivé pour ce message, codes
+`\PX`/`\PY`, échec de vérification…) s'exporte comme toute autre ligne, préfixe par ligne compris.
+QA : `LineTooLong` est retiré des textes mis en page (repérés par type ou par structure).
 
 ## Vérification
 

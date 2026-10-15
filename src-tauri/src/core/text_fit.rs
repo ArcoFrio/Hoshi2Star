@@ -48,6 +48,7 @@ impl TextFitSettings {
             overflow: self.overflow,
             min_font_size: self.min_font_size,
             dialogue_font_size: self.dialogue_font_size,
+            strip_stored_font_prefix: false,
         }
     }
 
@@ -233,8 +234,18 @@ pub async fn save_override(
 }
 
 /// Whether the project fits dialogue / descriptions (MV/MZ only; `false`
-/// on any error so QA never fails because of this lookup).
+/// on any error so QA never fails because of this lookup). `set_text_fit`
+/// only switches fitting on where export can fit.
 pub async fn enabled_kinds(db: &SqlitePool, project_id: &str) -> (bool, bool) {
+    let engine: Option<String> = sqlx::query_scalar("SELECT engine FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    if engine.as_deref() != Some("mv_mz") {
+        return (false, false);
+    }
     match load_settings(db, project_id).await {
         Ok(settings) => (settings.enabled_dialogue, settings.enabled_descriptions),
         Err(_) => (false, false),
