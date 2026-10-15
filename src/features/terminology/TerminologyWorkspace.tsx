@@ -5,6 +5,8 @@ import {
   BookOpenText,
   ChevronLeft,
   ChevronRight,
+  Globe2,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -31,6 +33,7 @@ import { TerminologyTable } from "./TerminologyTable";
 import { TerminologyToolbar } from "./TerminologyToolbar";
 import { useTerminologyUiStore } from "./terminologyUiStore";
 import { useTranslation } from "react-i18next";
+import { WorkspaceState } from "@/components/common/WorkspaceState";
 
 const PAGE_SIZE = 100;
 
@@ -63,7 +66,19 @@ export function TerminologyWorkspace() {
   );
   const [scanProgress, setScanProgress] =
     useState<TerminologyScanProgress | null>(null);
-  const [translateOpen, setTranslateOpen] = useState(false);
+  const [translateEntry, setTranslateEntry] = useState<
+    TerminologyEntry | null | undefined
+  >(undefined);
+  const [deleteRequest, setDeleteRequest] = useState<{
+    ids: string[];
+    term?: string;
+    bulk?: boolean;
+  } | null>(null);
+  const [globalizeRequest, setGlobalizeRequest] = useState<{
+    mode: "row" | "selected" | "filtered";
+    ids: string[];
+    term?: string;
+  } | null>(null);
 
   const queryInput = {
     sourceLanguage,
@@ -125,7 +140,7 @@ export function TerminologyWorkspace() {
           semanticType: value.semanticType,
           senseKey: "",
         });
-      await terminologyApi.update({
+      const updated = await terminologyApi.update({
         id: editorEntry.id,
         canonicalText: value.canonicalText,
         reading: value.reading,
@@ -134,12 +149,12 @@ export function TerminologyWorkspace() {
         senseKey: editorEntry.senseKey,
         status: editorEntry.status,
       });
+      if (!value.targetText.trim()) return updated;
       return terminologyApi.upsertTranslation({
         entryId: editorEntry.id,
         targetLanguage,
         projectId,
         targetText: value.targetText,
-        reviewStatus: value.reviewStatus,
         enforcement: value.enforcement,
         confidence: 1,
         providerId: null,
@@ -160,6 +175,55 @@ export function TerminologyWorkspace() {
       setArchiveEntry(null);
       await invalidate();
       toast.success(t("terminology.archivedDone"));
+    },
+    onError: (error) => toast.error(String(error)),
+  });
+  const deleteEntries = useMutation({
+    mutationFn: (entryIds: string[]) => terminologyApi.deleteEntries(entryIds),
+    onSuccess: async (deleted, entryIds) => {
+      setDeleteRequest(null);
+      ui.removeSelected(entryIds);
+      const visibleEntries = list.data?.items ?? [];
+      if (
+        ui.page > 0 &&
+        visibleEntries.length > 0 &&
+        visibleEntries.every((entry) => entryIds.includes(entry.id))
+      ) {
+        ui.setPage(ui.page - 1);
+      }
+      await invalidate();
+      toast.success(t("terminology.deletedDone", { count: deleted }));
+    },
+    onError: (error) => toast.error(String(error)),
+  });
+  const globalize = useMutation({
+    mutationFn: async (request: NonNullable<typeof globalizeRequest>) => {
+      if (!activeProject) throw new Error(t("terminology.chooseProject"));
+      if (request.mode === "filtered") {
+        return terminologyApi.globalizeFiltered({
+          ...queryInput,
+          projectId: activeProject.id,
+          page: 0,
+        });
+      }
+      return terminologyApi.globalize({
+        entryIds: request.ids,
+        targetLanguage,
+        projectId: activeProject.id,
+      });
+    },
+    onSuccess: async (summary) => {
+      setGlobalizeRequest(null);
+      ui.clearSelection();
+      await invalidate();
+      toast.success(
+        t("terminology.globalizeDone", {
+          copied: summary.copied,
+          same: summary.alreadyGlobal,
+          conflicts: summary.conflicts,
+          skipped: summary.skipped,
+        }),
+      );
     },
     onError: (error) => toast.error(String(error)),
   });
@@ -189,11 +253,11 @@ export function TerminologyWorkspace() {
 
   return (
     <main
-      className="flex h-full min-h-0 flex-col gap-3 overflow-hidden p-4"
+      className="observatory-grid flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden p-3 sm:p-4"
       aria-busy={list.isLoading}
     >
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
+      <header className="flex min-w-0 flex-wrap items-end justify-between gap-3">
+        <div className="min-w-0 flex-1">
           <h1 className="flex items-center gap-2 text-balance text-xl font-semibold">
             <BookOpenText className="size-5 text-primary" />{" "}
             {t("terminology.title")}
@@ -212,7 +276,7 @@ export function TerminologyWorkspace() {
           </p>
         </div>
         {stats.data && (
-          <dl className="flex gap-4 rounded-xl bg-muted/60 px-3 py-2 text-xs">
+          <dl className="flex max-w-full gap-3 overflow-x-auto rounded-xl bg-card/82 px-3 py-2 text-xs shadow-[var(--shadow-surface)] [scrollbar-width:none]">
             <Stat
               label={t("terminology.terms")}
               value={stats.data.totalEntries}
@@ -222,14 +286,12 @@ export function TerminologyWorkspace() {
               value={stats.data.untranslatedEntries}
             />
             <Stat
-              label={t("terminology.proposed")}
-              value={stats.data.proposedTranslations}
+              label={t("terminology.project")}
+              value={stats.data.projectTranslations}
             />
             <Stat
-              label={t("terminology.validated")}
-              value={
-                stats.data.approvedTranslations + stats.data.lockedTranslations
-              }
+              label={t("terminology.global")}
+              value={stats.data.globalTranslations}
             />
           </dl>
         )}
@@ -262,7 +324,7 @@ export function TerminologyWorkspace() {
         scanning={Boolean(scanProgress)}
         onScan={() => void startScan()}
         onCreate={() => setEditorEntry(null)}
-        onTranslate={() => setTranslateOpen(true)}
+        onTranslate={() => setTranslateEntry(null)}
       />
       {scanProgress && (
         <ScanProgress
@@ -271,39 +333,108 @@ export function TerminologyWorkspace() {
         />
       )}
       {list.isError ? (
-        <StateMessage
+        <WorkspaceState
           icon={<AlertCircle />}
           title={t("terminology.loadError")}
-          detail={String(list.error)}
+          description={String(list.error)}
+          tone="error"
+          className="flex-1"
         />
       ) : list.isLoading ? (
-        <StateMessage title={t("terminology.loading")} />
+        <WorkspaceState title={t("terminology.loading")} className="flex-1" />
       ) : list.data?.items.length ? (
         <TerminologyTable
           entries={list.data.items}
           selectedIds={ui.selectedIds}
           onToggleSelected={ui.toggleSelected}
+          onTogglePage={ui.setPageSelection}
+          onTranslate={setTranslateEntry}
           onEdit={setEditorEntry}
+          onGlobalize={(entry) =>
+            setGlobalizeRequest({
+              mode: "row",
+              ids: [entry.id],
+              term: entry.canonicalText,
+            })
+          }
           onArchive={setArchiveEntry}
+          onDelete={(entry) =>
+            setDeleteRequest({
+              ids: [entry.id],
+              term: entry.canonicalText,
+            })
+          }
         />
       ) : (
-        <StateMessage
+        <WorkspaceState
           icon={<BookOpenText />}
           title={t("terminology.empty")}
-          detail={t(
+          description={t(
             activeProject
               ? "terminology.emptyProject"
               : "terminology.emptyGlobal",
           )}
+          className="flex-1"
         />
       )}
-      <footer className="flex items-center justify-between text-xs text-muted-foreground">
-        <span className="tabular-nums">
-          {t("terminology.countSelected", {
-            count: list.data?.total ?? 0,
-            selected: ui.selectedIds.length,
-          })}
-        </span>
+      <footer className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="tabular-nums">
+            {t("terminology.countSelected", {
+              count: list.data?.total ?? 0,
+              selected: ui.selectedIds.length,
+            })}
+          </span>
+          {ui.selectedIds.length > 0 && (
+            <>
+              {activeProject && effectiveScope === "project" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={globalize.isPending}
+                  onClick={() =>
+                    setGlobalizeRequest({
+                      mode: "selected",
+                      ids: [...ui.selectedIds],
+                    })
+                  }
+                >
+                  <Globe2 />
+                  {t("terminology.globalizeSelected", {
+                    count: ui.selectedIds.length,
+                  })}
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={deleteEntries.isPending}
+                onClick={() =>
+                  setDeleteRequest({ ids: [...ui.selectedIds], bulk: true })
+                }
+              >
+                <Trash2 />
+                {t("terminology.deleteSelected", {
+                  count: ui.selectedIds.length,
+                })}
+              </Button>
+            </>
+          )}
+          {activeProject &&
+            effectiveScope === "project" &&
+            (stats.data?.projectTranslations ?? 0) > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={globalize.isPending}
+                onClick={() =>
+                  setGlobalizeRequest({ mode: "filtered", ids: [] })
+                }
+              >
+                <Globe2 /> {t("terminology.globalizeFiltered")}
+              </Button>
+            )}
+        </div>
         <div className="flex items-center gap-2">
           <Button
             size="icon-sm"
@@ -341,21 +472,60 @@ export function TerminologyWorkspace() {
           saving={save.isPending}
         />
       )}
-      {translateOpen && (
+      {translateEntry !== undefined && (
         <TermTranslateDialog
           open
-          entries={list.data?.items ?? []}
-          selectedIds={ui.selectedIds}
+          entries={translateEntry ? [translateEntry] : (list.data?.items ?? [])}
+          selectedIds={translateEntry ? [translateEntry.id] : ui.selectedIds}
           targetLanguage={targetLanguage}
-          projectId={projectId}
+          projectId={activeProject?.id ?? null}
+          defaultScope={effectiveScope}
           providerConfig={providerConfig}
-          onOpenChange={setTranslateOpen}
+          onOpenChange={(open) => {
+            if (!open) setTranslateEntry(undefined);
+          }}
           onDone={() => {
             ui.clearSelection();
             void invalidate();
           }}
         />
       )}
+      <AlertDialog
+        open={Boolean(globalizeRequest)}
+        onOpenChange={(open) => {
+          if (!open && !globalize.isPending) setGlobalizeRequest(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("terminology.globalizeTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("terminology.globalizeDescription", {
+                scope:
+                  globalizeRequest?.mode === "filtered"
+                    ? t("terminology.currentFilters")
+                    : globalizeRequest?.term ??
+                      t("terminology.selectedCount", {
+                        count: globalizeRequest?.ids.length ?? 0,
+                      }),
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={globalize.isPending}>
+              {t("terminology.cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={globalize.isPending}
+              onClick={() => globalizeRequest && globalize.mutate(globalizeRequest)}
+            >
+              {t("terminology.globalizeConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={Boolean(archiveEntry)}
         onOpenChange={(open) => {
@@ -382,6 +552,47 @@ export function TerminologyWorkspace() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog
+        open={Boolean(deleteRequest)}
+        onOpenChange={(open) => {
+          if (!open && !deleteEntries.isPending) setDeleteRequest(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t(
+                deleteRequest?.bulk
+                  ? "terminology.deleteManyTitle"
+                  : "terminology.deleteTitle",
+              )}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteRequest?.bulk
+                ? t("terminology.deleteManyDescription", {
+                    count: deleteRequest?.ids.length ?? 0,
+                  })
+                : t("terminology.deleteDescription", {
+                    term: deleteRequest?.term ?? "",
+                  })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteEntries.isPending}>
+              {t("terminology.cancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleteEntries.isPending}
+              onClick={() =>
+                deleteRequest && deleteEntries.mutate(deleteRequest.ids)
+              }
+            >
+              {t("terminology.deleteConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   );
 }
@@ -393,36 +604,6 @@ function Stat({ label, value }: { label: string; value: number }) {
       <dd className="tabular-nums text-sm font-semibold text-foreground">
         {value}
       </dd>
-    </div>
-  );
-}
-function StateMessage({
-  icon,
-  title,
-  detail,
-}: {
-  icon?: React.ReactNode;
-  title: string;
-  detail?: string;
-}) {
-  return (
-    <div className="grid min-h-48 flex-1 place-items-center rounded-2xl bg-card/65 p-8 text-center shadow-[var(--shadow-surface)]">
-      <div>
-        {icon && (
-          <span className="mx-auto mb-3 grid size-10 place-items-center rounded-xl bg-muted text-muted-foreground">
-            {icon}
-          </span>
-        )}
-        <p className="font-medium">{title}</p>
-        {detail && (
-          <p
-            className="mt-1 max-w-xl text-sm text-muted-foreground"
-            role={title.startsWith("Impossible") ? "alert" : undefined}
-          >
-            {detail}
-          </p>
-        )}
-      </div>
     </div>
   );
 }
